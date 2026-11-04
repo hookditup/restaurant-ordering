@@ -47,6 +47,35 @@
     return money(min) + (more ? '+' : '');
   };
 
+  // Highlights the category in view and keeps its pill visible in the bar.
+  const watchJump = (function (selector) {
+    var nav = null, active = null, queued = false;
+    function update() {
+      queued = false;
+      nav = document.querySelector(selector);
+      if (!nav) return;
+      var links = [].slice.call(nav.querySelectorAll('a[href^="#"]'));
+      var line = nav.getBoundingClientRect().bottom + 24, hit = links[0];
+      var pad = parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop) || 0;
+      links.forEach(function (a) {
+        var s = document.getElementById(a.getAttribute('href').slice(1));
+        // A tapped link can land its section lower than the bar, so allow for that gap.
+        if (s && s.getBoundingClientRect().top <= Math.max(line, pad + (parseFloat(getComputedStyle(s).scrollMarginTop) || 0) + 8)) hit = a;
+      });
+      if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2) hit = links[links.length - 1];
+      links.forEach(function (a) { if (a !== hit) a.removeAttribute('aria-current'); });
+      if (!hit || hit.getAttribute('aria-current')) return;
+      hit.setAttribute('aria-current', 'true');
+      var moved = active !== hit;
+      active = hit;
+      if (moved) nav.scrollTo({ left: hit.offsetLeft - (nav.clientWidth - hit.offsetWidth) / 2, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    }
+    function queue() { if (!queued) { queued = true; requestAnimationFrame(update); } }
+    addEventListener('scroll', queue, { passive: true });
+    addEventListener('resize', queue);
+    return queue;
+  })('.ro-jump');
+
   async function start() {
     try {
       const [m, s] = await Promise.all([
@@ -83,6 +112,7 @@
     root.querySelector('#ro-open').addEventListener('click', openCart);
     root.querySelectorAll('[data-item]').forEach((b) => b.addEventListener('click', () => openItem(b.dataset.item)));
     updateCartButton();
+    watchJump();
   }
 
   const card = (i) => `<button class="ro-item" type="button" data-item="${i.id}">
