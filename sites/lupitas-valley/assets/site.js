@@ -84,6 +84,41 @@
     return queue;
   })('.jump')();
 
+  // Auto-scrolling rows. Guests can swipe them, and they stop for hover, touch, focus or the Pause button.
+  document.querySelectorAll('[data-scroller]').forEach(function (box) {
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches || !window.requestAnimationFrame) return;
+    var track = box.querySelector('.scroller-track'), items = [].slice.call(track.children);
+    [1, 2].forEach(function () {
+      items.forEach(function (el) {
+        var c = el.cloneNode(true);
+        c.setAttribute('aria-hidden', 'true');
+        track.appendChild(c);
+      });
+    });
+    var speed = +box.getAttribute('data-scroller'), pos = 0, last = 0, held = 0, paused = false, seen = true;
+    var hold = function () { held = Date.now() + 2500; };
+    var btn = document.createElement('button');
+    btn.type = 'button'; btn.className = 'scroller-btn'; btn.textContent = 'Pause';
+    btn.addEventListener('click', function () { paused = !paused; btn.textContent = paused ? 'Play' : 'Pause'; pos = box.scrollLeft; });
+    box.parentNode.insertBefore(btn, box.nextSibling);
+    ['mouseenter', 'mousemove', 'touchstart', 'touchmove', 'wheel', 'focusin'].forEach(function (ev) { box.addEventListener(ev, hold, { passive: true }); });
+    if (window.IntersectionObserver) new IntersectionObserver(function (e) { seen = e[0].isIntersecting; }).observe(box);
+    var step = function (t) {
+      var gap = Math.min(t - last, 100); last = t;
+      var setWidth = track.children[items.length].offsetLeft - track.children[0].offsetLeft;
+      if (paused || !seen || document.hidden || Date.now() < held) {
+        pos = box.scrollLeft;
+      } else {
+        pos += speed * gap / 1000;
+        if (pos >= setWidth) pos -= setWidth;
+        box.scrollLeft = pos;
+      }
+      if (box.scrollLeft >= setWidth * 2) { box.scrollLeft -= setWidth; pos = box.scrollLeft; }
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  });
+
   // Forms
   document.querySelectorAll('form[data-form]').forEach(function (f) {
     f.addEventListener('submit', function (ev) {
