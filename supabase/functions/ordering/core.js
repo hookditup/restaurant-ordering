@@ -127,18 +127,50 @@ export function priceCart(menu, lines, pickupAt) {
   return out;
 }
 
-export function totals(lines, restaurant, tipCents = 0) {
+export function totals(lines, restaurant, tipCents = 0, discountCents = 0) {
   const subtotal = lines.reduce((s, l) => s + l.line_total_cents, 0);
   const tip = Math.max(0, Math.min(Math.round(Number(tipCents) || 0), 50000));
-  const guest_fee = Math.round(subtotal * restaurant.guest_fee_bps / 10000);
-  const tax = Math.round((subtotal + guest_fee) * restaurant.tax_rate_bps / 10000);
-  return { subtotal_cents: subtotal, guest_fee_cents: guest_fee, tax_cents: tax, tip_cents: tip, total_cents: subtotal + guest_fee + tax + tip };
+  const discount = Math.max(0, Math.min(Math.round(Number(discountCents) || 0), subtotal));
+  const taxable = subtotal - discount;
+  const guest_fee = Math.round(taxable * restaurant.guest_fee_bps / 10000);
+  const tax = Math.round((taxable + guest_fee) * restaurant.tax_rate_bps / 10000);
+  return { subtotal_cents: subtotal, discount_cents: discount, guest_fee_cents: guest_fee, tax_cents: tax, tip_cents: tip, total_cents: taxable + guest_fee + tax + tip };
+}
+
+/** How much of a total a gift card covers, and what is left to pay. */
+export function applyGift(totalCents, balanceCents) {
+  const gift_applied_cents = Math.max(0, Math.min(totalCents, balanceCents));
+  return { gift_applied_cents, amount_due_cents: totalCents - gift_applied_cents };
+}
+
+export function normPhone(value) {
+  const digits = String(value ?? '').replace(/\D/g, '');
+  return digits.length === 10 ? `+1${digits}` : digits.length === 11 && digits[0] === '1' ? `+${digits}` : '';
+}
+
+/** Codes read easily aloud: no 0, O, 1, I or L. */
+const CODE_LETTERS = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
+export function makeCode(length, random = (n) => crypto.getRandomValues(new Uint8Array(n))) {
+  const out = [];
+  while (out.length < length) for (const b of random(length * 2)) if (b < 248 && out.length < length) out.push(CODE_LETTERS[b % CODE_LETTERS.length]);
+  return out.join('');
+}
+export const cleanCode = (value) => String(value ?? '').toUpperCase().replace(/[^0-9A-Z]/g, '').slice(0, 24);
+
+/** A date a guest may reserve: today or later, within a year, on a day the restaurant is open. */
+export function validReservationDate(restaurant, date, now = new Date()) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date))) return false;
+  const wanted = new Date(`${date}T12:00:00Z`);
+  if (Number.isNaN(wanted.getTime())) return false;
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: restaurant.timezone }).format(now);
+  if (date < today || wanted.getTime() - now.getTime() > 366 * 86400000) return false;
+  const day = wanted.toLocaleDateString('en-US', { timeZone: 'UTC', weekday: 'short' }).toLowerCase().slice(0, 3);
+  return (restaurant.hours?.[day] ?? []).length > 0;
 }
 
 export function cleanGuest(g) {
   const clean = (s, n) => String(s ?? '').replace(/[<>]/g, '').trim().slice(0, n);
-  const digits = String(g?.phone ?? '').replace(/\D/g, '');
-  const phone = digits.length === 10 ? `+1${digits}` : digits.length === 11 && digits[0] === '1' ? `+${digits}` : '';
+  const phone = normPhone(g?.phone);
   const email = clean(g?.email, 120).toLowerCase();
   const first_name = clean(g?.first_name, 40), last_name = clean(g?.last_name, 40);
   if (!first_name || !last_name) throw new OrderError('Please enter your first and last name.');

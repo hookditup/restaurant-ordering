@@ -6,9 +6,10 @@ Reusable online ordering for independent restaurants. One database serves many r
 
 - `supabase/migrations/`: database, security rules, menu importer
 - `supabase/functions/ordering/`: API. `core.js` holds the pricing and hours rules; `index.ts` handles checkout, Stripe, the kitchen and emails
-- `web/`: guest menu and cart (`ordering.js`), order tracking (`order-status.js`), kitchen tablet screen (`kitchen.js`)
+- `web/`: guest menu and cart (`ordering.js`), order tracking (`order-status.js`), gift card and rewards pages (`guest-tools.js`), staff screen (`kitchen.js`)
 - `seed/lupitas/`: Lupita's Valley menu and the script that builds it
-- `test/`: `npm test` for the rules, `e2e-api.mjs` and `e2e-browser.cjs` for full runs against a test restaurant
+- `sites/lupitas-valley/`: built test site, deployed as static files
+- `test/`: `npm test` for the rules, plus `e2e-api.mjs`, `e2e-programs.mjs` and the two `-browser.cjs` scripts for full runs against a test restaurant
 
 ## Add it to a website
 
@@ -20,6 +21,17 @@ Reusable online ordering for independent restaurants. One database serves many r
 ```
 
 Add `/order/` with `<div id="ro-status">` and `order-status.js`, and `/kitchen/` with `<div id="ro-kitchen">` and `kitchen.js`.
+
+Add `<div id="ro-gift"></div>` and `<div id="ro-rewards"></div>` with `guest-tools.js` for the gift card and rewards pages.
+
+## Forms, reservations, rewards, gift cards
+
+- **Forms:** POST `{ action: 'form', restaurant, form, data }`. Every form is saved, shown in the staff Messages tab and emailed to `restaurants.forms_email`.
+- **Reservations:** the `reservation` form creates a request. Staff confirm or decline it in the Reservations tab, and the guest is emailed.
+- **Rewards:** the `rewards` form creates a member and shows their code once. Picked-up orders earn points when the phone matches. Rules are `rewards_points_per_dollar`, `rewards_redeem_points` and `rewards_redeem_cents`. Rewards discounts lower taxable sales.
+- **Gift cards:** bought online with Stripe, or sold in the staff screen by a manager. They work at checkout and in store. Limits are `gift_min_cents` and `gift_max_cents`.
+- Cancelling an order, or a Stripe session expiring, returns its points and gift card balance.
+- Guests and staff reach these tables only through the edge function.
 
 ## Add a restaurant
 
@@ -38,6 +50,6 @@ Restaurants start in test mode. With no `STRIPE_SECRET_KEY`, test orders are mar
 1. Confirm the sales tax rate (`restaurants.tax_rate_bps`).
 2. Set function secrets: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `RESEND_API_KEY`, `EMAIL_FROM`.
 3. Connect the restaurant's Stripe account (`restaurants.stripe_account_id`) and point a webhook at `/functions/v1/ordering?hook=stripe` for `checkout.session.completed` and `checkout.session.expired`.
-4. Create the real kitchen login and set `restaurants.alert_email`.
+4. Create the real kitchen login and set `restaurants.alert_email` and `restaurants.forms_email`.
 5. Set `test_mode = false`, then place and refund one real order.
 6. Use a Supabase plan that doesn't pause projects.

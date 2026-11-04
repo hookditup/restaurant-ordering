@@ -5,10 +5,13 @@
 //   status     guest: order progress by private token
 //   kitchen    staff: accept | ready | complete | cancel an order
 //   pause      staff: stop or resume taking orders
+//   form       guest: website forms, reservation requests and rewards sign-ups
+//   rewards_info, rewards_check, gift_buy, gift_view, gift_check   guest
+//   staff      staff: reservations, messages, rewards and gift cards
 //   ?hook=stripe  Stripe webhook
 // Secrets: STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, RESEND_API_KEY, EMAIL_FROM.
 // With no Stripe key, a restaurant in test mode marks orders as test-paid. Live mode never does.
-import { cleanGuest, NEXT, OrderError, pickupSlots, priceCart, totals, validPickup } from './core.js';
+import { applyGift, cleanCode, cleanGuest, makeCode, NEXT, normPhone, OrderError, pickupSlots, priceCart, totals, validPickup, validReservationDate } from './core.js';
 
 const SB_URL = Deno.env.get('SUPABASE_URL')!;
 const SB_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -50,12 +53,12 @@ async function menuFor(slug: string) {
   return m;
 }
 
-async function sendEmail(to: string | null, subject: string, text: string, orderId: string | null) {
+async function sendEmail(to: string | null, subject: string, text: string, orderId: string | null, replyTo?: string) {
   if (!to) return;
   if (!RESEND || !FROM) { await log(orderId, 'email', 'not_sent_no_provider', { subject }); return; }
   const r = await fetch('https://api.resend.com/emails', {
     method: 'POST', headers: { Authorization: `Bearer ${RESEND}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ from: FROM, to, subject, text }),
+    body: JSON.stringify({ from: FROM, to, subject, text, ...(replyTo ? { reply_to: replyTo } : {}) }),
   }).catch(() => null);
   await log(orderId, 'email', r?.ok ? 'sent' : 'failed', { subject, status: r?.status });
 }
@@ -91,7 +94,7 @@ async function markPaid(o: any, payment_status: string, intent?: string) {
   const [r] = await db(`restaurants?select=name,timezone,alert_email,site_url&id=eq.${o.restaurant_id}`);
   await log(o.id, 'payment', payment_status);
   await sendEmail(o.email, `${r.name} order ${o.order_no} received`,
-    `Thanks ${o.first_name}! We got your order. Pickup: ${timeText(o.pickup_at, r.timezone)}.\nTotal: ${money(o.total_cents)}\n\nTrack it: ${r.site_url}/order/?t=${o.token}`, o.id);
+    `Thanks ${o.first_name}! We got your order. Pickup: ${timeText(o.pickup_at, r.timezone)}.\nTotal: ${money(o.total_cents)}${o.gift_applied_cents ? ` (${money(o.gift_applied_cents)} paid by gift card)` : ''}\n\nTrack it: ${r.site_url}/order/?t=${o.token}`, o.id);
   await sendEmail(r.alert_email, `New online order ${o.order_no}`, `${o.first_name} ${o.last_name}, pickup ${timeText(o.pickup_at, r.timezone)}, ${money(o.total_cents)}.`, o.id);
 }
 
@@ -104,15 +107,24 @@ async function handleStripeHook(req: Request) {
   }).then((r) => r.json()).catch(() => []);
   if (!fresh?.length) return json({ ok: true, duplicate: true });
   const s = ev.data?.object ?? {};
+  if (s.metadata?.gift_card_id) {
+    const [card] = await db(`gift_cards?select=*&id=eq.${encodeURIComponent(s.metadata.gift_card_id)}`);
+    if (card && ev.type === 'checkout.session.completed' && s.payment_status === 'paid') {
+      if (s.amount_total !== card.initial_cents) { await log(null, 'stripe', 'gift_amount_mismatch', { card: card.id, paid: s.amount_total }); return json({ ok: true }); }
+      await activateGift(card, s.payment_intent);
+    }
+    return json({ ok: true });
+  }
   const orderId = s.metadata?.order_id;
   if (!orderId) return json({ ok: true });
   const [o] = await db(`orders?select=*&id=eq.${encodeURIComponent(orderId)}`);
   if (!o) return json({ ok: true });
   if (ev.type === 'checkout.session.completed' && s.payment_status === 'paid') {
-    if (s.amount_total !== o.total_cents) { await log(o.id, 'stripe', 'amount_mismatch', { paid: s.amount_total }); return json({ ok: true }); }
+    if (s.amount_total !== (o.amount_due_cents ?? o.total_cents)) { await log(o.id, 'stripe', 'amount_mismatch', { paid: s.amount_total }); return json({ ok: true }); }
     await markPaid(o, 'paid', s.payment_intent);
   } else if (ev.type === 'checkout.session.expired') {
-    await patch('orders', `id=eq.${o.id}&status=eq.awaiting_payment`, { status: 'expired' });
+    const gone = await patch('orders', `id=eq.${o.id}&status=eq.awaiting_payment`, { status: 'expired' });
+    if (gone?.length) await rpc('order_release_credits', { p_order: o.id });
   }
   return json({ ok: true });
 }
@@ -140,27 +152,41 @@ async function checkout(req: Request, body: any) {
   if (!pickup_at || !validPickup(r, pickup_at)) throw new OrderError('That pickup time is no longer available. Please pick another.');
   const guest = cleanGuest(body.guest);
   const lines = priceCart(menu, body.items, pickup_at);
-  const t = totals(lines, r, body.tip_cents);
+  const c = await priceWithCredits(r.id, lines, r, body.tip_cents, guest.phone, body.rewards_code, body.gift_code);
+  const { t } = c;
 
   const [full] = await db(`restaurants?select=stripe_account_id,site_url&id=eq.${r.id}`);
   const [o] = await insert('orders', {
-    restaurant_id: r.id, pickup_at: new Date(pickup_at).toISOString(), ...guest, ...t, test_mode: r.test_mode,
+    restaurant_id: r.id, pickup_at: new Date(pickup_at).toISOString(), ...guest, ...t, gift_applied_cents: c.gift_applied_cents,
+    amount_due_cents: c.amount_due_cents, test_mode: r.test_mode,
   });
   await insert('order_items', lines.map((l) => ({ ...l, order_id: o.id })));
   await log(o.id, 'guest', 'placed', { ip });
   const status_url = `${full.site_url}/order/?t=${o.token}`;
+  try {
+    if (c.account && (await rpc('rewards_change', { p_account: c.account.id, p_delta: -c.points, p_reason: 'redeemed', p_order: o.id })) === null) throw new OrderError('Your rewards balance changed. Please try again.');
+    if (c.card && (await rpc('gift_change', { p_card: c.card.id, p_delta: -c.gift_applied_cents, p_reason: 'redeemed', p_order: o.id })) === null) throw new OrderError('Your gift card balance changed. Please try again.');
+  } catch (e) {
+    await patch('orders', `id=eq.${o.id}`, { status: 'expired' });
+    await rpc('order_release_credits', { p_order: o.id });
+    throw e;
+  }
 
   if (!STRIPE) {
     if (!r.test_mode) throw new Error('Stripe is not configured for a live restaurant.');
     await markPaid(o, 'test_paid');
     return json({ ok: true, order_no: o.order_no, token: o.token, redirect: status_url, test: true });
   }
+  if (c.amount_due_cents === 0) {
+    await markPaid(o, 'gift_card');
+    return json({ ok: true, order_no: o.order_no, token: o.token, redirect: status_url });
+  }
   const origin = /^https:\/\//.test(String(body.return_url ?? '')) ? String(body.return_url).replace(/\/$/, '') : full.site_url;
   const session = await stripe('checkout/sessions', {
     mode: 'payment',
     'line_items[0][quantity]': '1',
     'line_items[0][price_data][currency]': 'usd',
-    'line_items[0][price_data][unit_amount]': String(t.total_cents),
+    'line_items[0][price_data][unit_amount]': String(c.amount_due_cents),
     'line_items[0][price_data][product_data][name]': `${r.name} order ${o.order_no}`,
     customer_email: guest.email,
     success_url: `${origin}/order/?t=${o.token}`,
@@ -168,9 +194,215 @@ async function checkout(req: Request, body: any) {
     expires_at: String(Math.floor(Date.now() / 1000) + 1800),
     'metadata[order_id]': o.id,
     'payment_intent_data[metadata][order_id]': o.id,
-  }, full.stripe_account_id, `order-${o.id}`);
+  }, full.stripe_account_id, `order-${o.id}`).catch(async (e) => {
+    await patch('orders', `id=eq.${o.id}`, { status: 'expired' });
+    await rpc('order_release_credits', { p_order: o.id });
+    throw e;
+  });
   await patch('orders', `id=eq.${o.id}`, { stripe_session_id: session.id });
   return json({ ok: true, order_no: o.order_no, token: o.token, redirect: session.url });
+}
+
+async function priceWithCredits(restaurantId: string, lines: any[], r: any, tip: unknown, phone: string, rewardsCode: unknown, giftCode: unknown) {
+  let account: any = null, points = 0, discount = 0;
+  const code = cleanCode(rewardsCode);
+  if (code) {
+    if (!phone) throw new OrderError('Enter your phone number to use rewards.');
+    const [rules] = await db(`restaurants?select=rewards_redeem_points,rewards_redeem_cents&id=eq.${restaurantId}`);
+    [account] = await db(`rewards_accounts?select=id,points&restaurant_id=eq.${restaurantId}&code=eq.${code}&phone=eq.${encodeURIComponent(phone)}`);
+    if (!account) throw new OrderError("We couldn't match that rewards code to this phone number.");
+    if (account.points < rules.rewards_redeem_points) throw new OrderError(`You need ${rules.rewards_redeem_points} points for a reward. You have ${account.points}.`);
+    points = rules.rewards_redeem_points;
+    discount = rules.rewards_redeem_cents;
+  }
+  const t = totals(lines, r, tip, discount);
+  let card: any = null, gift = { gift_applied_cents: 0, amount_due_cents: t.total_cents };
+  const gc = cleanCode(giftCode);
+  if (gc) {
+    [card] = await db(`gift_cards?select=id,balance_cents&restaurant_id=eq.${restaurantId}&code=eq.${gc}&status=eq.active`);
+    if (!card) throw new OrderError("We couldn't find that gift card.");
+    if (card.balance_cents <= 0) throw new OrderError('That gift card has no balance left.');
+    gift = applyGift(t.total_cents, card.balance_cents);
+  }
+  return { t, account, points, card, ...gift };
+}
+
+const ipOf = (req: Request) => (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim() || 'unknown';
+async function limited(req: Request, name: string, max: number, seconds = 600) {
+  if (await rpc('rate_limit', { p_key: `${name}:${ipOf(req)}`, p_max: max, p_seconds: seconds })) return false;
+  throw new OrderError('Too many tries. Please wait a few minutes or call us.');
+}
+const text = (v: unknown, n: number) => String(v ?? '').replace(/[<>]/g, '').trim().slice(0, n);
+const validEmail = (v: string) => /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(v);
+const rid = async (slug: unknown, fields = 'id') => {
+  const [r] = await db(`restaurants?select=${fields}&slug=eq.${encodeURIComponent(String(slug ?? ''))}&active=eq.true`);
+  if (!r) throw new OrderError('Restaurant not found.');
+  return r;
+};
+
+// ---------- website forms ----------
+async function rewardsJoin(r: any, d: Record<string, string>) {
+  const phone = normPhone(d.phone), name = text(d.name, 80), email = text(d.email, 120).toLowerCase();
+  if (!name) throw new OrderError('Please enter your name.');
+  if (!phone) throw new OrderError('Please enter a 10-digit phone number.');
+  if (email && !validEmail(email)) throw new OrderError('Please enter a valid email.');
+  const [old] = await db(`rewards_accounts?select=id,email,code&restaurant_id=eq.${r.id}&phone=eq.${encodeURIComponent(phone)}`);
+  if (old) {
+    await sendEmail(old.email, `Your ${r.name} rewards code`, `Your rewards code is ${old.code}.`, null);
+    return json({ ok: true, existing: true });
+  }
+  const code = makeCode(8);
+  const [a] = await insert('rewards_accounts', { restaurant_id: r.id, phone, name, email: email || null, code, sms_consent: d.sms_consent === 'yes' });
+  await sendEmail(a.email, `Welcome to ${r.name} Rewards`, `Thanks for joining, ${name}! Your rewards code is ${code}. Use it with your phone number when you order online.`, null);
+  return json({ ok: true, member: { code, points: 0 } });
+}
+
+async function submitForm(req: Request, body: any) {
+  await limited(req, 'form', 10);
+  const r = await rid(body.restaurant, 'id,name,timezone,hours,forms_email');
+  const kind = String(body.form ?? '');
+  if (!/^[a-z-]{2,30}$/.test(kind)) throw new OrderError('Please check the form and try again.');
+  if (body.website) return json({ ok: true }); // hidden field only bots fill in
+  const data: Record<string, string> = {};
+  for (const [k, v] of Object.entries(body.data ?? {}).slice(0, 25)) {
+    if (/^[a-z_]{1,30}$/.test(k)) data[k] = text(v, 2000);
+  }
+  let res: Response | null = null;
+  if (kind === 'rewards') {
+    res = await rewardsJoin(r, data);
+  } else if (kind === 'reservation') {
+    const phone = normPhone(data.phone), email = (data.email ?? '').toLowerCase();
+    if (!data.name) throw new OrderError('Please enter your name.');
+    if (!validEmail(email)) throw new OrderError('Please enter a valid email.');
+    if (!phone) throw new OrderError('Please enter a 10-digit phone number.');
+    if (!validReservationDate(r, data.date)) throw new OrderError("We can't take a reservation on that date. Please pick a day we're open.");
+    if (!data.time || !data.party_size) throw new OrderError('Please pick a time and party size.');
+    await insert('reservations', { restaurant_id: r.id, name: data.name, email, phone, res_date: data.date, res_time: text(data.time, 20), party_size: text(data.party_size, 20), requests: data.requests || null });
+  }
+  await insert('form_submissions', { restaurant_id: r.id, kind, data });
+  const lines = Object.entries(data).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`).join('\n');
+  await sendEmail(r.forms_email, `${r.name}: new ${kind.replace(/-/g, ' ')} form`, `${lines}\n\nSent from ${text(body.page, 100) || 'the website'}.`, null, validEmail(data.email ?? '') ? data.email : undefined);
+  return res ?? json({ ok: true });
+}
+
+// ---------- gift cards ----------
+async function activateGift(card: any, intent?: string) {
+  const rows = await patch('gift_cards', `id=eq.${card.id}&status=eq.pending`, { status: 'active', balance_cents: card.initial_cents, activated_at: new Date().toISOString(), stripe_payment_intent: intent ?? null });
+  if (!rows?.length) return;
+  await insert('gift_card_events', { gift_card_id: card.id, cents: card.initial_cents, reason: 'purchased', by_name: card.source });
+  const [r] = await db(`restaurants?select=name,site_url,forms_email&id=eq.${card.restaurant_id}`);
+  const to = card.recipient_email || card.buyer_email;
+  await sendEmail(to, `Your ${money(card.initial_cents)} ${r.name} gift card`,
+    `${card.recipient_name ? `Hi ${card.recipient_name}, ` : ''}${card.buyer_name ? `${card.buyer_name} sent you ` : 'Here is '}a ${money(card.initial_cents)} gift card.${card.message ? `\n\n"${card.message}"` : ''}\n\nCode: ${card.code}\n\nUse it at checkout on ${r.site_url}/menu or show it at the restaurant.`, null);
+  if (card.recipient_email && card.buyer_email) await sendEmail(card.buyer_email, `Your ${r.name} gift card was sent`, `We sent the ${money(card.initial_cents)} gift card to ${card.recipient_email}.`, null);
+  await sendEmail(r.forms_email, `${r.name}: gift card sold`, `${money(card.initial_cents)} gift card ending ${card.code.slice(-4)}, bought by ${card.buyer_name || 'staff'}.`, null);
+}
+
+async function giftBuy(req: Request, body: any) {
+  await limited(req, 'gift-buy', 6);
+  const r = await rid(body.restaurant, 'id,name,test_mode,site_url,stripe_account_id,gift_min_cents,gift_max_cents');
+  const cents = Math.round(Number(body.amount_cents));
+  if (!Number.isInteger(cents) || cents % 100 || cents < r.gift_min_cents || cents > r.gift_max_cents) throw new OrderError(`Choose a whole-dollar amount from ${money(r.gift_min_cents)} to ${money(r.gift_max_cents)}.`);
+  const buyer_name = text(body.buyer_name, 80), buyer_email = text(body.buyer_email, 120).toLowerCase();
+  const recipient_name = text(body.recipient_name, 80), recipient_email = text(body.recipient_email, 120).toLowerCase();
+  if (!buyer_name) throw new OrderError('Please enter your name.');
+  if (!validEmail(buyer_email)) throw new OrderError('Please enter a valid email.');
+  if (recipient_email && !validEmail(recipient_email)) throw new OrderError("Please check the recipient's email.");
+  const [card] = await insert('gift_cards', { restaurant_id: r.id, code: makeCode(16), initial_cents: cents, buyer_name, buyer_email, recipient_name: recipient_name || null, recipient_email: recipient_email || null, message: text(body.message, 300) || null, test_mode: r.test_mode });
+  if (!STRIPE) {
+    if (!r.test_mode) throw new Error('Stripe is not configured for a live restaurant.');
+    await activateGift(card);
+    return json({ ok: true, token: card.token, test: true });
+  }
+  const origin = /^https:\/\//.test(String(body.return_url ?? '')) ? String(body.return_url).replace(/\/$/, '') : r.site_url;
+  const session = await stripe('checkout/sessions', {
+    mode: 'payment',
+    'line_items[0][quantity]': '1',
+    'line_items[0][price_data][currency]': 'usd',
+    'line_items[0][price_data][unit_amount]': String(cents),
+    'line_items[0][price_data][product_data][name]': `${r.name} gift card`,
+    customer_email: buyer_email,
+    success_url: `${origin}/gift-cards/?g=${card.token}`,
+    cancel_url: `${origin}/gift-cards/`,
+    expires_at: String(Math.floor(Date.now() / 1000) + 1800),
+    'metadata[gift_card_id]': card.id,
+  }, r.stripe_account_id, `gift-${card.id}`);
+  return json({ ok: true, token: card.token, redirect: session.url });
+}
+
+// ---------- staff tools ----------
+async function staffTools(req: Request, body: any) {
+  const r = await rid(body.restaurant, 'id,name,phone,site_url,rewards_redeem_points,rewards_redeem_cents,test_mode');
+  const me = await staffFor(req, r.id);
+  if (!me) return json({ ok: false, error: 'Please sign in again.' }, 401);
+  const manager = () => { if (me.role !== 'manager') throw new OrderError('Ask a manager to do this.'); };
+  const id = encodeURIComponent(String(body.id ?? ''));
+  const scope = `restaurant_id=eq.${r.id}`;
+  switch (String(body.op ?? '')) {
+    case 'counts': {
+      const count = async (t: string, q: string) => (await db(`${t}?select=id&${scope}&${q}`)).length;
+      return json({ ok: true, reservations: await count('reservations', 'status=eq.requested'), messages: await count('form_submissions', 'status=eq.new') });
+    }
+    case 'reservations': {
+      const today = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+      return json({ ok: true, rows: await db(`reservations?select=*&${scope}&res_date=gte.${today}&status=in.(requested,confirmed)&order=res_date.asc,res_time.asc&limit=100`) });
+    }
+    case 'reservation': {
+      const to = { confirm: 'confirmed', decline: 'declined', cancel: 'cancelled' }[String(body.move)];
+      if (!to) throw new OrderError('Unknown action.');
+      const [row] = await patch('reservations', `id=eq.${id}&${scope}`, { status: to, handled_by: me.name });
+      if (!row) throw new OrderError('Reservation not found.');
+      const when = `${row.res_date} at ${row.res_time}`;
+      await sendEmail(row.email, to === 'confirmed' ? `Your ${r.name} reservation is confirmed` : `About your ${r.name} reservation`,
+        to === 'confirmed' ? `Hi ${row.name}, we'll see you ${when} (party of ${row.party_size}). Questions? Call ${r.phone}.` : `Hi ${row.name}, we can't hold your table for ${when}. Please call ${r.phone} and we'll help you find another time.`, null);
+      return json({ ok: true, status: to });
+    }
+    case 'messages':
+      return json({ ok: true, rows: await db(`form_submissions?select=*&${scope}&status=eq.new&order=created_at.desc&limit=100`) });
+    case 'message': {
+      const [row] = await patch('form_submissions', `id=eq.${id}&${scope}`, { status: 'done' });
+      return row ? json({ ok: true }) : json({ ok: false, error: 'Message not found.' });
+    }
+    case 'rewards_find': {
+      const phone = normPhone(body.phone);
+      if (!phone) throw new OrderError('Enter a 10-digit phone number.');
+      const [a] = await db(`rewards_accounts?select=id,name,phone,email,code,points&${scope}&phone=eq.${encodeURIComponent(phone)}`);
+      return a ? json({ ok: true, account: a, redeem_points: r.rewards_redeem_points, redeem_cents: r.rewards_redeem_cents }) : json({ ok: false, error: 'No member with that phone number.' });
+    }
+    case 'rewards_adjust': {
+      const delta = Math.round(Number(body.points));
+      if (!Number.isInteger(delta) || !delta || Math.abs(delta) > 100000) throw new OrderError('Enter a number of points.');
+      if (delta > 0) manager();
+      const [a] = await db(`rewards_accounts?select=id&id=eq.${id}&${scope}`);
+      if (!a) throw new OrderError('Member not found.');
+      const points = await rpc('rewards_change', { p_account: a.id, p_delta: delta, p_reason: delta > 0 ? 'added_by_staff' : 'redeemed_in_store', p_by: me.name });
+      if (points === null) throw new OrderError('Not enough points.');
+      return json({ ok: true, points });
+    }
+    case 'gift_find': {
+      const [c] = await db(`gift_cards?select=id,code,balance_cents,initial_cents,status,recipient_name,buyer_name&${scope}&code=eq.${cleanCode(body.code)}`);
+      return c ? json({ ok: true, card: c }) : json({ ok: false, error: 'Gift card not found.' });
+    }
+    case 'gift_redeem': {
+      const cents = Math.round(Number(body.cents));
+      if (!Number.isInteger(cents) || cents <= 0) throw new OrderError('Enter an amount.');
+      const [c] = await db(`gift_cards?select=id&id=eq.${id}&${scope}`);
+      if (!c) throw new OrderError('Gift card not found.');
+      const balance_cents = await rpc('gift_change', { p_card: c.id, p_delta: -cents, p_reason: 'redeemed_in_store', p_by: me.name });
+      if (balance_cents === null) throw new OrderError('Not enough on this card.');
+      return json({ ok: true, balance_cents });
+    }
+    case 'gift_issue': {
+      manager();
+      const cents = Math.round(Number(body.cents));
+      if (!Number.isInteger(cents) || cents <= 0 || cents > 100000) throw new OrderError('Enter an amount.');
+      const [card] = await insert('gift_cards', { restaurant_id: r.id, code: makeCode(16), initial_cents: cents, source: 'staff', buyer_name: text(body.name, 80) || me.name, test_mode: r.test_mode });
+      await activateGift(card);
+      return json({ ok: true, code: card.code, balance_cents: cents });
+    }
+    default:
+      return json({ ok: false, error: 'Unknown action.' }, 400);
+  }
 }
 
 async function kitchen(req: Request, body: any) {
@@ -192,16 +424,20 @@ async function kitchen(req: Request, body: any) {
       const [res] = await db(`restaurants?select=stripe_account_id&id=eq.${o.restaurant_id}`);
       await stripe('refunds', { payment_intent: o.stripe_payment_intent }, res.stripe_account_id, `refund-${o.id}`);
       up.payment_status = 'refunded';
+    } else if (o.payment_status === 'gift_card') {
+      up.payment_status = 'refunded';
     }
   }
   const rows = await patch('orders', `id=eq.${o.id}&status=eq.${o.status}`, up);
   if (!rows?.length) return json({ ok: false, error: 'Someone else just updated this order.' });
   await log(o.id, 'kitchen', to, { by: staff.name });
+  if (to === 'cancelled') await rpc('order_release_credits', { p_order: o.id });
+  if (to === 'completed') await log(o.id, 'rewards', 'earned', { points: await rpc('order_earn_points', { p_order: o.id }) });
   const [r] = await db(`restaurants?select=name,site_url,phone&id=eq.${o.restaurant_id}`);
   if (to === 'ready') await sendEmail(o.email, `Your ${r.name} order is ready`, `Hi ${o.first_name}, order ${o.order_no} is ready for pickup.`, o.id);
   if (to === 'cancelled') {
     await sendEmail(o.email, `Your ${r.name} order was cancelled`,
-      `Hi ${o.first_name}, we had to cancel order ${o.order_no}. ${up.cancel_reason}. ${o.payment_status === 'paid' ? 'A full refund is on its way to your card.' : ''}\nQuestions? Call ${r.phone}.`, o.id);
+      `Hi ${o.first_name}, we had to cancel order ${o.order_no}. ${up.cancel_reason}. ${o.payment_status === 'paid' ? 'A full refund is on its way to your card.' : ''}${o.gift_applied_cents ? ' Your gift card balance has been restored.' : ''}\nQuestions? Call ${r.phone}.`, o.id);
   }
   return json({ ok: true, status: to });
 }
@@ -221,18 +457,47 @@ Deno.serve(async (req) => {
         const menu = await menuFor(body.restaurant);
         const when = body.pickup_at || pickupSlots(menu.restaurant)[0];
         if (!when) throw new OrderError('We have no pickup times available right now.');
-        return json({ ok: true, ...totals(priceCart(menu, body.items, when), menu.restaurant, body.tip_cents) });
+        if (body.rewards_code || body.gift_code) await limited(req, 'codes', 30);
+        const c = await priceWithCredits(menu.restaurant.id, priceCart(menu, body.items, when), menu.restaurant, body.tip_cents, normPhone(body.phone), body.rewards_code, body.gift_code);
+        return json({ ok: true, ...c.t, gift_applied_cents: c.gift_applied_cents, amount_due_cents: c.amount_due_cents });
       }
       case 'checkout':
         return await checkout(req, body);
       case 'status': {
         const token = String(body.token ?? '').replace(/[^a-f0-9]/g, '');
         if (!token) return json({ ok: false, error: 'Order not found.' }, 404);
-        const rows = await db(`orders?select=order_no,status,payment_status,pickup_at,first_name,subtotal_cents,tax_cents,guest_fee_cents,tip_cents,total_cents,test_mode,cancel_reason,restaurant:restaurants(name,phone,address,timezone),items:order_items(name,qty,line_total_cents,options,note)&token=eq.${token}`);
+        const rows = await db(`orders?select=order_no,status,payment_status,pickup_at,first_name,subtotal_cents,discount_cents,gift_applied_cents,amount_due_cents,tax_cents,guest_fee_cents,tip_cents,total_cents,test_mode,cancel_reason,restaurant:restaurants(name,phone,address,timezone),items:order_items(name,qty,line_total_cents,options,note)&token=eq.${token}`);
         return rows?.[0] ? json({ ok: true, order: rows[0] }) : json({ ok: false, error: 'Order not found.' }, 404);
       }
       case 'kitchen':
         return await kitchen(req, body);
+      case 'form':
+        return await submitForm(req, body);
+      case 'rewards_info': {
+        const r = await rid(body.restaurant, 'rewards_points_per_dollar,rewards_redeem_points,rewards_redeem_cents,gift_min_cents,gift_max_cents,test_mode');
+        return json({ ok: true, ...r });
+      }
+      case 'rewards_check': {
+        await limited(req, 'rewards-check', 10);
+        const r = await rid(body.restaurant);
+        const [a] = await db(`rewards_accounts?select=name,points&restaurant_id=eq.${r.id}&code=eq.${cleanCode(body.code)}&phone=eq.${encodeURIComponent(normPhone(body.phone))}`);
+        return a ? json({ ok: true, points: a.points, name: a.name }) : json({ ok: false, error: "We couldn't match that phone number and code." });
+      }
+      case 'gift_buy':
+        return await giftBuy(req, body);
+      case 'gift_view': {
+        const token = String(body.token ?? '').replace(/[^a-f0-9]/g, '');
+        const rows = token ? await db(`gift_cards?select=code,status,initial_cents,balance_cents,recipient_name,test_mode&token=eq.${token}`) : [];
+        return rows?.[0] ? json({ ok: true, card: rows[0] }) : json({ ok: false, error: 'Gift card not found.' }, 404);
+      }
+      case 'gift_check': {
+        await limited(req, 'gift-check', 10);
+        const r = await rid(body.restaurant);
+        const [c] = await db(`gift_cards?select=balance_cents&restaurant_id=eq.${r.id}&code=eq.${cleanCode(body.code)}&status=eq.active`);
+        return c ? json({ ok: true, balance_cents: c.balance_cents }) : json({ ok: false, error: "We couldn't find that gift card." });
+      }
+      case 'staff':
+        return await staffTools(req, body);
       case 'pause': {
         const [r] = await db(`restaurants?select=id&slug=eq.${encodeURIComponent(String(body.restaurant ?? ''))}`);
         if (!r || !(await staffFor(req, r.id))) return json({ ok: false, error: 'Please sign in again.' }, 401);

@@ -66,20 +66,23 @@
       new FormData(f).forEach(function (v, k) { data[k] = v; });
       if (data.website) return; // honeypot
       delete data.website;
-      data.form = f.getAttribute('data-form');
-      data.page = location.pathname;
-      if (!cfg.formEndpoint) {
+      var kind = f.getAttribute('data-form');
+      var ro = window.RO;
+      if (!ro) {
         msg.textContent = 'This form is not available yet. Please call us at ' + PHONE + '.';
         msg.className = 'form-msg err';
         return;
       }
       var btn = f.querySelector('button[type=submit]');
       btn.disabled = true;
-      fetch(cfg.formEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
+      fetch(ro.url + '/functions/v1/ordering', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'form', restaurant: ro.restaurant, form: kind, page: location.pathname, data: data }) })
+        .then(function (r) { return r.json(); })
         .then(function (r) {
-          if (!r.ok) throw new Error('bad status');
+          if (!r.ok) { msg.textContent = r.error || 'Something went wrong. Please call us at ' + PHONE + '.'; msg.className = 'form-msg err'; return; }
           f.reset();
-          msg.textContent = "Request Sent! We'll be in touch soon.";
+          msg.textContent = r.member ? 'Welcome! Your rewards code is ' + r.member.code + '. Save it to use your points.'
+            : r.existing ? 'You are already a member. Ask us for your rewards code next time you visit.'
+            : "Request Sent! We'll be in touch soon.";
           msg.className = 'form-msg ok';
         })
         .catch(function () {

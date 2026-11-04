@@ -204,6 +204,10 @@
         <label class="ro-field">Mobile phone<input name="phone" type="tel" autocomplete="tel" required value="${esc(draft.phone)}"></label>
         <label class="ro-field">Email for your receipt<input name="email" type="email" autocomplete="email" required value="${esc(draft.email)}"></label>
         <label class="ro-field">Order note<input name="note" maxlength="300" value="${esc(draft.note)}"></label>
+        <details class="ro-credits"${draft.gift_code || draft.rewards_code ? ' open' : ''}><summary>Gift card or rewards code</summary>
+          <label class="ro-field">Gift card code<input name="gift_code" autocomplete="off" value="${esc(draft.gift_code)}"></label>
+          <label class="ro-field">Rewards code<input name="rewards_code" autocomplete="off" value="${esc(draft.rewards_code)}"></label>
+          <button type="button" class="ro-apply" id="ro-apply">Apply</button></details>
         <fieldset class="ro-tip"><legend>Tip</legend>${pct.map((p) => `<button type="button" data-tip="${p}"${tipPct === p ? ' aria-pressed="true"' : ''}>${p ? `${p}%` : 'None'}</button>`).join('')}</fieldset>
         <dl class="ro-sum" id="ro-sum"><dt>Subtotal</dt><dd>${money(sub)}</dd></dl>
         <p class="ro-err" role="alert"></p>
@@ -214,20 +218,25 @@
     dialog.querySelectorAll('[data-del]').forEach((b) => { b.onclick = () => { keep(); cart.splice(+b.dataset.del, 1); store.set(cart); updateCartButton(); cart.length ? openCart() : close(); }; });
     dialog.querySelectorAll('[data-edit]').forEach((b) => { b.onclick = () => { keep(); close(); openItem(cart[+b.dataset.edit].id, +b.dataset.edit); }; });
     dialog.querySelectorAll('[data-tip]').forEach((b) => { b.onclick = () => { keep(); tipPct = +b.dataset.tip; tip = Math.round(cartTotal() * tipPct / 100); openCart(); }; });
+    dialog.querySelector('#ro-apply').onclick = () => { keep(); refreshTotals(); };
     dialog.querySelector('#ro-pay').addEventListener('submit', submit);
     if (!dialog.open) dialog.showModal();
     refreshTotals();
   }
-  let cartDraft = { first_name: '', last_name: '', phone: '', email: '', note: '' };
+  let cartDraft = { first_name: '', last_name: '', phone: '', email: '', note: '', gift_code: '', rewards_code: '' };
 
   async function refreshTotals() {
     tip = Math.round(cartTotal() * tipPct / 100);
-    const r = await post({ action: 'quote', pickup_at: pickup, tip_cents: tip, items: cart }).catch(() => null);
+    const form = dialog.querySelector('#ro-pay');
+    const val = (n) => form?.elements[n]?.value.trim() || undefined;
+    const r = await post({ action: 'quote', pickup_at: pickup, tip_cents: tip, items: cart, phone: val('phone'), gift_code: val('gift_code'), rewards_code: val('rewards_code') }).catch(() => null);
     const box = dialog.querySelector('#ro-sum');
     if (!box) return;
-    if (!r?.ok) { dialog.querySelector('#ro-pay .ro-err').textContent = r?.error || 'Could not price your order.'; return; }
-    box.innerHTML = `<dt>Subtotal</dt><dd>${money(r.subtotal_cents)}</dd>${r.guest_fee_cents ? `<dt>Service fee</dt><dd>${money(r.guest_fee_cents)}</dd>` : ''}
-      <dt>Tax</dt><dd>${money(r.tax_cents)}</dd>${r.tip_cents ? `<dt>Tip</dt><dd>${money(r.tip_cents)}</dd>` : ''}<dt class="ro-total">Total</dt><dd class="ro-total">${money(r.total_cents)}</dd>`;
+    const msg = dialog.querySelector('#ro-pay .ro-err');
+    if (!r?.ok) { msg.textContent = r?.error || 'Could not price your order.'; return; }
+    msg.textContent = '';
+    box.innerHTML = `<dt>Subtotal</dt><dd>${money(r.subtotal_cents)}</dd>${r.discount_cents ? `<dt>Rewards</dt><dd>−${money(r.discount_cents)}</dd>` : ''}${r.guest_fee_cents ? `<dt>Service fee</dt><dd>${money(r.guest_fee_cents)}</dd>` : ''}
+      <dt>Tax</dt><dd>${money(r.tax_cents)}</dd>${r.tip_cents ? `<dt>Tip</dt><dd>${money(r.tip_cents)}</dd>` : ''}<dt class="ro-total">Total</dt><dd class="ro-total">${money(r.total_cents)}</dd>${r.gift_applied_cents ? `<dt>Gift card</dt><dd>−${money(r.gift_applied_cents)}</dd><dt class="ro-total">Amount due</dt><dd class="ro-total">${money(r.amount_due_cents)}</dd>` : ''}`;
   }
 
   async function submit(e) {
@@ -236,7 +245,8 @@
     const guest = Object.fromEntries(new FormData(f).entries());
     err.textContent = '';
     btn.disabled = true;
-    const r = await post({ action: 'checkout', pickup_at: pickup, tip_cents: tip, items: cart, guest, return_url: location.origin }).catch(() => null);
+    const { gift_code, rewards_code } = guest;
+    const r = await post({ action: 'checkout', pickup_at: pickup, tip_cents: tip, items: cart, guest, gift_code, rewards_code, return_url: location.origin }).catch(() => null);
     if (!r?.ok) { err.textContent = r?.error || 'Something went wrong. Please try again or call us.'; btn.disabled = false; return; }
     cart = []; store.set(cart);
     location.href = r.test ? `/order/?t=${r.token}` : r.redirect;

@@ -24,7 +24,7 @@
       ${step != null ? `<ol class="ro-steps">${['Received', 'Being made', 'Ready'].map((s, i) => `<li class="${i <= step ? 'on' : ''}">${s}</li>`).join('')}</ol>` : ''}
       <p>Pickup: <strong>${esc(when)}</strong><br>${esc(o.restaurant.address)}<br><a href="tel:${esc(o.restaurant.phone)}">Call the restaurant</a></p>
       <ul class="ro-lines">${o.items.map((i) => `<li><div><strong>${i.qty} × ${esc(i.name)}</strong><span>${esc(i.options.map((x) => x.name).join(', '))}</span>${i.note ? `<span>${esc(i.note)}</span>` : ''}</div><b>${money(i.line_total_cents)}</b></li>`).join('')}</ul>
-      <dl class="ro-sum"><dt>Subtotal</dt><dd>${money(o.subtotal_cents)}</dd>${o.guest_fee_cents ? `<dt>Service fee</dt><dd>${money(o.guest_fee_cents)}</dd>` : ''}<dt>Tax</dt><dd>${money(o.tax_cents)}</dd>${o.tip_cents ? `<dt>Tip</dt><dd>${money(o.tip_cents)}</dd>` : ''}<dt class="ro-total">Total</dt><dd class="ro-total">${money(o.total_cents)}</dd></dl>`;
+      <dl class="ro-sum"><dt>Subtotal</dt><dd>${money(o.subtotal_cents)}</dd>${o.discount_cents ? `<dt>Rewards</dt><dd>−${money(o.discount_cents)}</dd>` : ''}${o.guest_fee_cents ? `<dt>Service fee</dt><dd>${money(o.guest_fee_cents)}</dd>` : ''}<dt>Tax</dt><dd>${money(o.tax_cents)}</dd>${o.tip_cents ? `<dt>Tip</dt><dd>${money(o.tip_cents)}</dd>` : ''}<dt class="ro-total">Total</dt><dd class="ro-total">${money(o.total_cents)}</dd>${o.gift_applied_cents ? `<dt>Gift card</dt><dd>−${money(o.gift_applied_cents)}</dd><dt class="ro-total">Amount due</dt><dd class="ro-total">${money(o.amount_due_cents)}</dd>` : ''}</dl>`;
     if (['completed', 'cancelled', 'expired'].includes(o.status)) clearInterval(timer);
   }
   if (!token) { box.innerHTML = '<h1>Order not found</h1>'; return; }
