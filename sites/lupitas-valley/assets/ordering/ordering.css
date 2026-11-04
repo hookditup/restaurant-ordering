@@ -1,0 +1,57 @@
+/* Uses the host site's variables when present. */
+#ro-menu, .ro-dialog, .ro-page { --ro-accent: var(--red, #931515); --ro-ink: var(--ink, #0d0d0d); --ro-mute: var(--mute, #4d4d4d); --ro-line: var(--line, #ebebec); --ro-soft: var(--soft, #f6f6f6); --ro-r: var(--r, 10px); }
+.ro-test { background: #fff4d6; color: #5c4400; padding: .5rem .75rem; border-radius: 8px; font-weight: 600; margin: 0 0 1rem; }
+.ro-closed { background: var(--ro-soft); padding: .75rem; border-radius: 8px; font-weight: 600; }
+.ro-bar { display: flex; gap: 1rem; margin-bottom: .75rem; }
+.ro-bar label { font-weight: 600; display: flex; flex-direction: column; gap: .25rem; width: min(100%, 320px); }
+.ro-bar select, .ro-field input, .ro-field textarea { width: 100%; min-height: 44px; padding: .55rem .7rem; border: 1px solid #8c8c8c; border-radius: 8px; font: inherit; background: #fff; color: var(--ro-ink); }
+.ro-jump { display: flex; gap: .4rem; overflow-x: auto; padding: .5rem 0; position: sticky; top: 76px; background: #fff; z-index: 5; border-bottom: 1px solid var(--ro-line); }
+.ro-jump a { flex: none; padding: .4rem .75rem; border-radius: 999px; background: var(--ro-soft); color: var(--ro-ink); text-decoration: none; font-size: .875rem; }
+.ro-cat { padding-top: 1.75rem; scroll-margin-top: 130px; }
+.ro-note { color: var(--ro-mute); margin: 0 0 .3rem; }
+.ro-items { display: grid; grid-template-columns: repeat(2, 1fr); gap: .9rem; margin-top: .8rem; }
+.ro-item { display: flex; justify-content: space-between; gap: .8rem; text-align: left; border: 1px solid var(--ro-line); border-radius: var(--ro-r); padding: .8rem; background: #fff; cursor: pointer; font: inherit; color: var(--ro-ink); min-height: 44px; }
+.ro-item:hover { border-color: var(--ro-accent); }
+.ro-item-t { display: flex; flex-direction: column; gap: .2rem; min-width: 0; }
+.ro-item-t span { font-size: .875rem; color: var(--ro-mute); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.ro-item img { width: 110px; height: 110px; object-fit: cover; border-radius: 8px; flex: none; }
+.ro-cartbtn { position: fixed; left: 50%; transform: translateX(-50%); bottom: 16px; z-index: 70; background: var(--ro-accent); color: #fff; border: 0; border-radius: 999px; padding: .85rem 1.5rem; font: 600 1rem inherit; font-family: inherit; box-shadow: 0 6px 20px rgb(0 0 0/.25); cursor: pointer; min-height: 48px; white-space: nowrap; }
+.ro-dialog { border: 0; border-radius: 14px; padding: 0; width: min(560px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); }
+.ro-dialog::backdrop { background: rgb(0 0 0/.5); }
+.ro-sheet { padding: 1.1rem; position: relative; display: block; }
+.ro-sheet h2 { margin: 0 0 .35rem; font-size: 1.4rem; }
+.ro-hero { width: 100%; height: 200px; object-fit: cover; border-radius: 10px; margin-bottom: .8rem; }
+.ro-x { position: absolute; right: .6rem; top: .6rem; width: 40px; height: 40px; border-radius: 50%; border: 0; background: #fff; box-shadow: 0 1px 4px rgb(0 0 0/.3); font-size: 1.4rem; cursor: pointer; z-index: 2; }
+.ro-tags { font-size: .85rem; color: var(--ro-mute); }
+.ro-sheet fieldset { border: 0; border-top: 1px solid var(--ro-line); padding: .7rem 0; margin: 0; }
+.ro-sheet legend { font-weight: 700; padding: 0; }
+.ro-sheet legend small { font-weight: 400; color: var(--ro-mute); margin-left: .3rem; }
+.ro-opt { display: flex; align-items: center; gap: .6rem; min-height: 44px; }
+.ro-opt input { width: 20px; height: 20px; flex: none; accent-color: var(--ro-accent); }
+.ro-opt span { flex: 1; }
+.ro-opt em { font-style: normal; color: var(--ro-mute); }
+.ro-field { display: block; font-weight: 600; margin: .55rem 0; font-size: .95rem; }
+.ro-two { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; }
+.ro-err { color: var(--ro-accent); font-weight: 600; margin: .3rem 0; display: block; }
+.ro-err:empty { display: none; }
+.ro-foot { display: flex; gap: .7rem; align-items: center; position: sticky; bottom: -1px; background: #fff; padding-top: .6rem; }
+.ro-qty { display: flex; align-items: center; gap: .6rem; }
+.ro-qty button { width: 44px; height: 44px; border-radius: 50%; border: 1px solid #8c8c8c; background: #fff; font-size: 1.2rem; cursor: pointer; }
+.ro-add { flex: 1; width: 100%; min-height: 48px; border: 0; border-radius: var(--ro-r); background: var(--ro-accent); color: #fff; font: 600 1rem inherit; font-family: inherit; cursor: pointer; }
+.ro-add:disabled { opacity: .6; cursor: wait; }
+.ro-lines { list-style: none; margin: 0; padding: 0; }
+.ro-lines li { display: flex; justify-content: space-between; gap: 1rem; padding: .6rem 0; border-bottom: 1px solid var(--ro-line); }
+.ro-lines span { display: block; font-size: .875rem; color: var(--ro-mute); }
+.ro-lines button { background: none; border: 0; color: var(--ro-accent); padding: .35rem .6rem .35rem 0; font: inherit; font-size: .875rem; cursor: pointer; text-decoration: underline; min-height: 32px; }
+.ro-tip { display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; }
+.ro-tip legend { margin-bottom: .3rem; }
+.ro-tip button { min-width: 64px; min-height: 44px; border: 1px solid #8c8c8c; border-radius: 8px; background: #fff; font: inherit; cursor: pointer; }
+.ro-tip button[aria-pressed="true"] { background: var(--ro-accent); color: #fff; border-color: var(--ro-accent); }
+.ro-sum { display: grid; grid-template-columns: 1fr auto; gap: .2rem; margin: .7rem 0; }
+.ro-sum dd { margin: 0; text-align: right; }
+.ro-total { font-weight: 700; font-size: 1.1rem; }
+.ro-page { max-width: 640px; margin: 0 auto; padding: 2rem 16px 4rem; }
+.ro-steps { list-style: none; display: grid; grid-template-columns: repeat(3, 1fr); gap: .4rem; padding: 0; margin: 1rem 0; }
+.ro-steps li { padding: .55rem; text-align: center; border-radius: 8px; background: var(--ro-soft); color: var(--ro-mute); font-size: .9rem; }
+.ro-steps li.on { background: var(--ro-accent); color: #fff; font-weight: 600; }
+@media (max-width: 768px) { .ro-items { grid-template-columns: 1fr; } .ro-jump { top: 64px; } .ro-cartbtn { bottom: 68px; } .ro-item img { width: 88px; height: 88px; } }

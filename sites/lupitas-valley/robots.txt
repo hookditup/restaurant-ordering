@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://lupitasvalley.com/sitemap.xml

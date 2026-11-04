@@ -1,0 +1,52 @@
+{
+  "cleanUrls": false,
+  "trailingSlash": false,
+  "redirects": [
+    {
+      "source": "/tags/blt",
+      "destination": "/menu",
+      "permanent": true
+    },
+    {
+      "source": "/tags/delivery",
+      "destination": "/menu",
+      "permanent": true
+    },
+    {
+      "source": "/heber-city",
+      "destination": "/",
+      "permanent": true
+    },
+    {
+      "source": "/gift-cards/check",
+      "destination": "/gift-cards",
+      "permanent": true
+    },
+    {
+      "source": "/contact",
+      "destination": "/page/contact-us",
+      "permanent": true
+    },
+    {
+      "source": "/login",
+      "destination": "/rewards",
+      "permanent": true
+    },
+    {
+      "source": "/account",
+      "destination": "/rewards",
+      "permanent": true
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "X-Robots-Tag",
+          "value": "noindex, nofollow"
+        }
+      ]
+    }
+  ]
+}
