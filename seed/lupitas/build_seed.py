@@ -3,7 +3,7 @@
 
 The export was taken at night, so Enchiladas and Traditional Dishes hold the dinner
 versions. lunch.json holds the daytime prices and text seen on the live page.
-Lunch option groups are copied from dinner until a daytime export replaces them.
+Lunch option groups match the Nov 4, 2026 daytime check of the live menu.
 """
 import json, os, re, sys, urllib.request
 

@@ -20,7 +20,7 @@ const dinner = slots.find((s) => localMin(s) >= 17 * 60);
 const trad = menu.categories.filter((c) => c.name === 'Traditional Dishes');
 const lunchTacos = trad[0].items.find((i) => i.name === 'Tacos'), dinnerTacos = trad[1].items.find((i) => i.name === 'Tacos');
 const pick = (i, name) => i.groups.flatMap((g) => g.options).find((o) => o.name === name).id;
-const lunchLine = { id: lunchTacos.id, qty: 2, options: [pick(lunchTacos, 'Steak')], price_cents: 1 };
+const lunchLine = { id: lunchTacos.id, qty: 2, options: [pick(lunchTacos, 'Steak'), pick(lunchTacos, 'Fries')], price_cents: 1 };
 
 let q = await fn({ action: 'quote', restaurant: slug, pickup_at: lunch, items: [lunchLine], tip_cents: 300 });
 assert.equal(q.subtotal_cents, (899 + 449) * 2); assert.equal(q.tax_cents, Math.round(q.subtotal_cents * 0.0865)); assert.equal(q.total_cents, q.subtotal_cents + q.tax_cents + 300);
