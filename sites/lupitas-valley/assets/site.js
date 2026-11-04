@@ -84,7 +84,7 @@
     return queue;
   })('.jump')();
 
-  // Auto-scrolling rows. Guests can swipe them, and they stop for hover, touch, focus or the Pause button.
+  // Auto-scrolling rows. Guests can swipe them. They stop on hover or focus, and briefly after a touch.
   document.querySelectorAll('[data-scroller]').forEach(function (box) {
     if (matchMedia('(prefers-reduced-motion: reduce)').matches || !window.requestAnimationFrame) return;
     var track = box.querySelector('.scroller-track'), items = [].slice.call(track.children);
@@ -97,11 +97,10 @@
     });
     var speed = +box.getAttribute('data-scroller'), pos = 0, last = 0, held = 0, paused = false, seen = true;
     var hold = function () { held = Date.now() + 2500; };
-    var btn = document.createElement('button');
-    btn.type = 'button'; btn.className = 'scroller-btn'; btn.textContent = 'Pause';
-    btn.addEventListener('click', function () { paused = !paused; btn.textContent = paused ? 'Play' : 'Pause'; pos = box.scrollLeft; });
-    box.parentNode.insertBefore(btn, box.nextSibling);
-    ['mouseenter', 'mousemove', 'touchstart', 'touchmove', 'wheel', 'focusin'].forEach(function (ev) { box.addEventListener(ev, hold, { passive: true }); });
+    var stop = function () { paused = true; }, go = function () { paused = false; };
+    box.addEventListener('mouseenter', stop); box.addEventListener('mouseleave', go);
+    box.addEventListener('focusin', stop); box.addEventListener('focusout', go);
+    ['touchstart', 'touchmove', 'wheel'].forEach(function (ev) { box.addEventListener(ev, hold, { passive: true }); });
     if (window.IntersectionObserver) new IntersectionObserver(function (e) { seen = e[0].isIntersecting; }).observe(box);
     var step = function (t) {
       var gap = Math.min(t - last, 100); last = t;
