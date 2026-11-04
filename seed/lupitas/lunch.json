@@ -1,0 +1,126 @@
+{
+ "Enchiladas": {
+  "hours": {
+   "mon": [
+    [
+     "10:30",
+     "16:00"
+    ]
+   ],
+   "tue": [
+    [
+     "10:30",
+     "16:00"
+    ]
+   ],
+   "wed": [
+    [
+     "10:30",
+     "16:00"
+    ]
+   ],
+   "thu": [
+    [
+     "10:30",
+     "16:00"
+    ]
+   ],
+   "fri": [
+    [
+     "10:30",
+     "16:00"
+    ]
+   ],
+   "sat": [
+    [
+     "10:30",
+     "16:00"
+    ]
+   ]
+  },
+  "items": {
+   "Enchiladas Catalinas": {
+    "description": "Three shredded chicken enchiladas in chile guajillo sauce, topped with steamed potatoes and carrots, avocado, homemade queso fresco, Mexican crema, and shredded lettuce",
+    "price_cents": 1599
+   },
+   "Enchiladas Suizas": {
+    "description": "Four shredded chicken and cheese enchiladas smothered in a creamy cilantro-tomatillo sauce, topped with Heber Valley Artisan Cheese, Mexican crema, and avocado",
+    "price_cents": 1499
+   },
+   "Enchiladas Rojas": {
+    "description": "Three chicken or cheese enchiladas smothered in our smoky red chile guajillo sauce, topped with Heber Valley Artisan Cheese",
+    "price_cents": 1099,
+    "drop_groups": "side|dressing"
+   },
+   "Enchiladas Verdes": {
+    "description": "Three chicken or cheese enchiladas with queso Oaxaca, smothered in our tangy green tomatillo sauce, topped with Heber Valley Artisan Cheese",
+    "price_cents": 1099,
+    "drop_groups": "side|dressing"
+   },
+   "Enchiladas De Mole": {
+    "description": "Three chicken or cheese enchiladas with Monterrey-pepper jack cheese, smothered in our spicy-sweet Micha-Poblano mole, topped with Heber Valley Artisan Cheese",
+    "price_cents": 1149,
+    "drop_groups": "side|dressing"
+   }
+  }
+ },
+ "Traditional Dishes": {
+  "hours": {
+   "mon": [
+    [
+     "10:30",
+     "16:00"
+    ]
+   ],
+   "tue": [
+    [
+     "10:30",
+     "16:00"
+    ]
+   ],
+   "wed": [
+    [
+     "10:30",
+     "16:00"
+    ]
+   ],
+   "thu": [
+    [
+     "10:30",
+     "16:00"
+    ]
+   ],
+   "fri": [
+    [
+     "10:30",
+     "16:00"
+    ]
+   ],
+   "sat": [
+    [
+     "10:30",
+     "16:00"
+    ]
+   ]
+  },
+  "items": {
+   "Tacos": {
+    "description": "Three homemade corn tortillas, choice of protein, fresh salsa, and lime *Topped with chopped onion & fresh cilantro* Grilled Chicken, Slow Braised Pork (Carnitas), Steak, or Slow Braised Beef (Birria) *Topped with crema cilantro, pico, & pickled onions* Sautéed Veggies or Shrimp",
+    "price_cents": 899,
+    "drop_groups": "side|dressing"
+   },
+   "Burrito": {
+    "description": "Large flour tortilla filled with choice of protein, Mexican rice, refried beans, and Monterrey-pepper jack cheese, smothered in mole, red guajillo, or green tomatillo salsa, topped with Heber Valley Artisan Cheese",
+    "price_cents": 1249
+   },
+   "Fajitas": {
+    "description": "Choice of protein, sautéed bell peppers and red onions, served with fresh guacamole, Mexican crema, a side and tortillas of choice",
+    "price_cents": 1749
+   },
+   "Sopes": {
+    "description": "Three thick fried corn masa base, refried beans, choice of protein, homemade queso fresco, fresh avocado, Mexican crema, pico de gallo, shredded lettuce, and pickled onions Choose from: Carnitas, Avocado, Tinga (Smoky Tomato-Chipotle Chicken), or Steak",
+    "price_cents": 1349
+   }
+  }
+ }
+}

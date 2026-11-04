@@ -1,0 +1,1 @@
+{ "name": "restaurant-ordering", "private": true, "type": "module", "scripts": { "test": "node --test test/core.test.mjs" } }

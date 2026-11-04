@@ -1,0 +1,153 @@
+// Pure ordering rules, shared by the edge function and the tests.
+// All money is in integer cents. The browser's prices are never trusted.
+
+export class OrderError extends Error {}
+
+const DAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+
+/** Local wall-clock parts of a moment in a restaurant's time zone. */
+export function zoned(date, tz) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, weekday: 'short', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(date).map((x) => [x.type, x.value]));
+  return { day: p.weekday.toLowerCase().slice(0, 3), ymd: `${p.year}-${p.month}-${p.day}`, minutes: +p.hour * 60 + +p.minute };
+}
+
+const toMin = (s) => { const [h, m] = s.split(':').map(Number); return h * 60 + m; };
+
+/** hours = {mon:[["10:30","21:00"]]}. End time is exclusive. */
+export function isOpenAt(hours, date, tz) {
+  const z = zoned(date, tz);
+  return (hours?.[z.day] ?? []).some(([a, b]) => z.minutes >= toMin(a) && z.minutes < toMin(b));
+}
+
+/** A category with no hours of its own follows the restaurant. */
+export function categoryOpenAt(category, restaurant, date) {
+  const tz = restaurant.timezone;
+  return isOpenAt(restaurant.hours, date, tz) && (!category.hours || isOpenAt(category.hours, date, tz));
+}
+
+/** Convert a local date and minute-of-day in a time zone to a real instant. */
+function instantFor(ymd, minutes, tz) {
+  const [y, mo, d] = ymd.split('-').map(Number);
+  const guess = Date.UTC(y, mo - 1, d, Math.floor(minutes / 60), minutes % 60);
+  let t = guess;
+  for (let i = 0; i < 2; i++) {
+    const z = zoned(new Date(t), tz);
+    const [zy, zm, zd] = z.ymd.split('-').map(Number);
+    t += guess - Date.UTC(zy, zm - 1, zd, Math.floor(z.minutes / 60), z.minutes % 60);
+  }
+  return new Date(t);
+}
+
+/** Pickup times on 15-minute marks, today and the next two days, grouped by nothing: a flat list. */
+export function pickupSlots(restaurant, now = new Date(), days = 3) {
+  const tz = restaurant.timezone;
+  const earliest = now.getTime() + restaurant.pickup_lead_minutes * 60000;
+  const lastGap = restaurant.last_order_minutes_before_close ?? 0;
+  const out = [];
+  for (let n = 0; n < days + 1 && out.length < 200; n++) {
+    const z = zoned(new Date(now.getTime() + n * 86400000), tz);
+    if (n === days) break;
+    for (const [a, b] of restaurant.hours?.[z.day] ?? []) {
+      for (let m = Math.ceil(toMin(a) / 15) * 15; m < toMin(b) - lastGap; m += 15) {
+        const t = instantFor(z.ymd, m, tz);
+        if (t.getTime() >= earliest) out.push(t.toISOString());
+      }
+    }
+  }
+  return out;
+}
+
+/** Is this exact pickup time on offer? Guards against tampered requests. */
+export function validPickup(restaurant, iso, now = new Date()) {
+  return pickupSlots(restaurant, now).includes(new Date(iso).toISOString());
+}
+
+export function indexMenu(menu) {
+  const items = new Map();
+  for (const c of menu.categories) for (const i of c.items) items.set(i.id, { item: i, category: c });
+  return items;
+}
+
+/**
+ * Check one cart line's choices and work out its price.
+ * selections: option ids the guest picked. Follow-up groups are checked only
+ * when the choice that opens them was picked.
+ */
+export function priceLine(item, selected) {
+  const picked = new Set(selected ?? []);
+  const options = [];
+  let extras = 0;
+  const known = new Set();
+
+  const walk = (groups) => {
+    for (const g of groups) {
+      const chosen = g.options.filter((o) => picked.has(o.id));
+      g.options.forEach((o) => known.add(o.id));
+      if (chosen.length < g.min) throw new OrderError(`Please choose ${g.name} for ${item.name}.`);
+      if (g.max != null && chosen.length > g.max) throw new OrderError(`Too many choices for ${g.name} on ${item.name}.`);
+      for (const o of chosen) {
+        extras += o.price_cents;
+        options.push({ group: g.name, name: o.name, price_cents: o.price_cents });
+        walk(o.groups ?? []);
+      }
+    }
+  };
+  walk(item.groups ?? []);
+
+  for (const id of picked) {
+    if (!known.has(id)) throw new OrderError(`A choice on ${item.name} isn't available.`);
+  }
+  return { unit_cents: item.price_cents + extras, options };
+}
+
+/** Price a whole cart at a pickup time. Unavailable items stop the order. */
+export function priceCart(menu, lines, pickupAt) {
+  if (!Array.isArray(lines) || !lines.length) throw new OrderError('Your cart is empty.');
+  if (lines.length > 60) throw new OrderError('That order is too large to place online. Please call us.');
+  const index = indexMenu(menu);
+  const when = new Date(pickupAt);
+  const out = [];
+  for (const l of lines) {
+    const hit = index.get(l.id);
+    if (!hit) throw new OrderError('An item in your cart is no longer available.');
+    if (!categoryOpenAt(hit.category, menu.restaurant, when)) {
+      throw new OrderError(`${hit.item.name} isn't available at that pickup time.`);
+    }
+    const qty = Math.floor(Number(l.qty));
+    if (!Number.isInteger(qty) || qty < 1 || qty > 50) throw new OrderError(`Check the quantity for ${hit.item.name}.`);
+    const { unit_cents, options } = priceLine(hit.item, l.options);
+    out.push({
+      menu_item_id: hit.item.id, name: hit.item.name, qty, unit_price_cents: unit_cents,
+      line_total_cents: unit_cents * qty, options, note: String(l.note ?? '').replace(/[<>]/g, '').trim().slice(0, 200) || null,
+    });
+  }
+  return out;
+}
+
+export function totals(lines, restaurant, tipCents = 0) {
+  const subtotal = lines.reduce((s, l) => s + l.line_total_cents, 0);
+  const tip = Math.max(0, Math.min(Math.round(Number(tipCents) || 0), 50000));
+  const guest_fee = Math.round(subtotal * restaurant.guest_fee_bps / 10000);
+  const tax = Math.round((subtotal + guest_fee) * restaurant.tax_rate_bps / 10000);
+  return { subtotal_cents: subtotal, guest_fee_cents: guest_fee, tax_cents: tax, tip_cents: tip, total_cents: subtotal + guest_fee + tax + tip };
+}
+
+export function cleanGuest(g) {
+  const clean = (s, n) => String(s ?? '').replace(/[<>]/g, '').trim().slice(0, n);
+  const digits = String(g?.phone ?? '').replace(/\D/g, '');
+  const phone = digits.length === 10 ? `+1${digits}` : digits.length === 11 && digits[0] === '1' ? `+${digits}` : '';
+  const email = clean(g?.email, 120).toLowerCase();
+  const first_name = clean(g?.first_name, 40), last_name = clean(g?.last_name, 40);
+  if (!first_name || !last_name) throw new OrderError('Please enter your first and last name.');
+  if (!phone) throw new OrderError('Please enter a 10-digit phone number.');
+  if (!/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/.test(email)) throw new OrderError('Please enter a valid email for your receipt.');
+  return { first_name, last_name, phone, email, note: clean(g?.note, 300) || null };
+}
+
+/** Allowed kitchen moves. */
+export const NEXT = { new: ['accepted', 'cancelled'], accepted: ['ready', 'cancelled'], ready: ['completed', 'cancelled'] };
+
+export { DAYS };
