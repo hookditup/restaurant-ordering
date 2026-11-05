@@ -87,8 +87,12 @@
   // Pause button for anything that moves on its own (WCAG 2.2.2)
   var moveBtn = function (label, after, onToggle, cls) {
     var b = document.createElement('button'), off = false;
-    b.type = 'button'; b.className = 'move-btn' + (cls || ''); b.textContent = 'Pause'; b.setAttribute('aria-label', 'Pause ' + label);
-    b.addEventListener('click', function () { off = !off; b.textContent = off ? 'Play' : 'Pause'; b.setAttribute('aria-label', (off ? 'Play ' : 'Pause ') + label); onToggle(off); });
+    var icon = function () {
+      b.innerHTML = '<svg aria-hidden="true" focusable="false" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="' + (off ? 'M4 2.5v11l9-5.5z' : 'M3.5 2.5h3.2v11H3.5zM9.3 2.5h3.2v11H9.3z') + '"/></svg>';
+      b.setAttribute('aria-label', (off ? 'Play ' : 'Pause ') + label);
+    };
+    b.type = 'button'; b.className = 'move-btn' + (cls || ''); icon();
+    b.addEventListener('click', function () { off = !off; icon(); onToggle(off); });
     after(b);
   };
   var heroVideo = document.querySelector('.hero video');
