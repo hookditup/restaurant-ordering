@@ -26,7 +26,7 @@ Add `<div id="ro-gift"></div>` and `<div id="ro-rewards"></div>` with `guest-too
 
 ## Forms, reservations, rewards, gift cards
 
-- **Forms:** POST `{ action: 'form', restaurant, form, data }`. Every form is saved, shown in the staff Messages tab and emailed to `restaurants.forms_email`.
+- **Forms:** POST `{ action: 'form', restaurant, form, data }`. Every form is saved, shown in the admin Messages tab and emailed to `restaurants.forms_email`.
 - **Reservations:** the `reservation` form creates a request. Staff confirm or decline it in the Reservations tab, and the guest is emailed.
 - **Rewards:** the `rewards` form creates a member and shows their code once. Picked-up orders earn points when the phone matches. Rules are `rewards_points_per_dollar`, `rewards_redeem_points` and `rewards_redeem_cents`. Rewards discounts lower taxable sales.
 - **Gift cards:** bought online with Stripe, or sold in the staff screen by a manager. They work at checkout and in store. Limits are `gift_min_cents` and `gift_max_cents`.

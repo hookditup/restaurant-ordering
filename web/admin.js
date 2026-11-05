@@ -11,7 +11,7 @@
     set(v) { try { v ? localStorage.setItem(KEY, JSON.stringify(v)) : localStorage.removeItem(KEY); } catch { /* signs in again next load */ } },
   };
   let session = keep.get(), r = null, tab = 'dashboard', days = 30, menu = null;
-  const TABS = [['dashboard', 'Dashboard'], ['orders', 'Orders'], ['reservations', 'Reservations'], ['menu', 'Menu'], ['choices', 'Choices'], ['pairs', 'Popular and pairings'], ['settings', 'Settings']];
+  const TABS = [['dashboard', 'Dashboard'], ['orders', 'Orders'], ['reservations', 'Reservations'], ['messages', 'Messages'], ['menu', 'Menu'], ['choices', 'Choices'], ['pairs', 'Popular and pairings'], ['settings', 'Settings']];
 
   async function refresh() {
     const x = await fetch(`${AUTH}/token?grant_type=refresh_token`, { method: 'POST', headers: { apikey: cfg.key, 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh_token: session?.refresh_token }) });
@@ -52,12 +52,22 @@
     };
   }
 
+  async function counts() {
+    const b = root.querySelector('.a-badge');
+    if (!b) return;
+    const c = await staff('counts').catch(() => null);
+    if (!c) return;
+    b.hidden = !c.messages;
+    b.textContent = c.messages;
+    b.setAttribute('aria-label', `${c.messages} new`);
+  }
   function shell() {
     root.innerHTML = `<header class="a-top"><h1>${esc(r.name)} admin</h1><a href="/kitchen/">Kitchen screen</a><button id="a-out">Sign out</button></header>
-      <nav class="a-tabs" aria-label="Admin sections">${TABS.map(([k, t]) => `<button data-tab="${k}"${k === tab ? ' aria-current="page"' : ''}>${t}</button>`).join('')}</nav>
+      <nav class="a-tabs" aria-label="Admin sections">${TABS.map(([k, t]) => `<button data-tab="${k}"${k === tab ? ' aria-current="page"' : ''}>${t}${k === 'messages' ? '<span class="a-badge" hidden></span>' : ''}</button>`).join('')}</nav>
       <p id="a-msg" class="a-msg" role="status"></p><div id="a-view"></div>`;
     root.querySelector('#a-out').onclick = () => { session = null; keep.set(null); loginView(); };
     root.querySelectorAll('[data-tab]').forEach((b) => { b.onclick = () => { tab = b.dataset.tab; shell(); }; });
+    counts();
     views[tab]().catch((e) => { if (e.message !== 'auth') say(e.message, true); });
   }
   const view = () => root.querySelector('#a-view');
@@ -106,6 +116,11 @@
       view().innerHTML = `<p class="a-help">Confirming or declining emails the guest once email is connected.</p>${rows.map((x) => `<section class="a-box"><h2>${esc(x.res_date)} at ${esc(x.res_time)}</h2><p>${x.status === 'requested' ? '<strong>Needs reply</strong>' : 'Confirmed'}</p><p>${esc(x.name)} · party of ${esc(x.party_size)}<br><a href="tel:${esc(x.phone)}">${esc(x.phone)}</a> · ${esc(x.email)}${x.requests ? `<br>${esc(x.requests)}` : ''}</p>
         <div class="a-btns">${x.status === 'requested' ? `<button data-r="${x.id}" data-m="confirm" aria-label="Confirm ${esc(x.name)}">Confirm</button><button class="a-alt" data-r="${x.id}" data-m="decline" aria-label="Decline ${esc(x.name)}">Decline</button>` : `<button class="a-alt" data-r="${x.id}" data-m="cancel" aria-label="Cancel ${esc(x.name)}">Cancel</button>`}</div></section>`).join('') || '<p>No upcoming reservations.</p>'}`;
       view().querySelectorAll('[data-r]').forEach((b) => { b.onclick = () => attempt(async () => { await staff('reservation', { id: b.dataset.r, move: b.dataset.m }); await views.reservations(); }); });
+    },
+    async messages() {
+      const { rows } = await staff('messages');
+      view().innerHTML = `<p class="a-help">Every website form lands here. Done clears it from this list. It doesn't reply to the guest.</p>${rows.map((m) => `<section class="a-box"><h2>${esc(m.kind.replace(/-/g, ' '))}</h2><p>${esc(new Date(m.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}</p>${Object.entries(m.data).filter(([k]) => k !== 'sms_consent' && m.data[k]).map(([k, v]) => `<p><strong>${esc(k.replace(/_/g, ' '))}:</strong> ${esc(v)}</p>`).join('')}<div class="a-btns"><button data-done="${m.id}" aria-label="Done with ${esc(m.kind.replace(/-/g, ' '))} from ${esc(m.data.name || 'guest')}">Done</button></div></section>`).join('') || '<p>No new messages.</p>'}`;
+      view().querySelectorAll('[data-done]').forEach((b) => { b.onclick = () => attempt(async () => { await staff('message', { id: b.dataset.done }); await views.messages(); await counts(); }); });
     },
     async menu() {
       menu = await rpc('admin_menu', { p_restaurant: r.id });

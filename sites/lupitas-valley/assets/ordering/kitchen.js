@@ -10,7 +10,7 @@
     get() { try { return JSON.parse(localStorage.getItem(KEY)); } catch { return null; } },
     set(v) { try { v ? localStorage.setItem(KEY, JSON.stringify(v)) : localStorage.removeItem(KEY); } catch { /* signs in again next load */ } },
   };
-  let tab = 'orders', session = keep.get(), restaurant = null, seen = new Set(), first = true, seenCounts = null, timer, lastOk = Date.now(), audio;
+  let tab = 'orders', session = keep.get(), restaurant = null, seen = new Set(), first = true, timer, lastOk = Date.now(), audio;
 
   const beep = () => {
     try {
@@ -75,31 +75,20 @@
       if (w && Date.now() - lastOk > 30000) w.hidden = false;
     }
   }
-  const TABS = [['orders', 'Orders'], ['messages', 'Messages'], ['rewards', 'Rewards'], ['gift', 'Gift cards']];
+  const TABS = [['orders', 'Orders'], ['rewards', 'Rewards'], ['gift', 'Gift cards']];
   const staff = (op, extra = {}) => act({ action: 'staff', restaurant: cfg.restaurant, op, ...extra });
   function shell(accepting) {
     root.innerHTML = `<header class="k-top"><h1>${esc(restaurant.name)}</h1><p class="k-offline" hidden>Connection lost. Retrying…</p>
       <button class="k-pause ${accepting ? '' : 'off'}">${accepting ? 'Taking orders · Pause' : 'PAUSED · Resume'}</button><button class="k-out">Sign out</button></header>
-      <nav class="k-tabs">${TABS.map(([k, t]) => `<button data-tab="${k}"${k === tab ? ' aria-current="page"' : ''}>${t}<span class="k-badge" data-count="${k}" hidden></span></button>`).join('')}</nav>
+      <nav class="k-tabs">${TABS.map(([k, t]) => `<button data-tab="${k}"${k === tab ? ' aria-current="page"' : ''}>${t}</button>`).join('')}</nav>
       <div id="k-view"></div>`;
     root.querySelector('.k-out').onclick = () => { session = null; keep.set(null); loginView(); };
     root.querySelector('.k-pause').onclick = async () => { await act({ action: 'pause', restaurant: cfg.restaurant, accepting: !accepting }); root.innerHTML = ''; tick(); };
     root.querySelectorAll('[data-tab]').forEach((b) => { b.onclick = () => { tab = b.dataset.tab; root.innerHTML = ''; tick(); }; });
   }
-  async function counts() {
-    const c = await staff('counts').catch(() => null);
-    if (!c?.ok) return;
-    if (seenCounts && c.messages > seenCounts.messages) beep();
-    seenCounts = c;
-    for (const k of ['messages']) {
-      const b = root.querySelector(`[data-count="${k}"]`);
-      if (b) { b.hidden = !c[k]; b.textContent = c[k]; }
-    }
-  }
   function shellTab() { const wait = () => { if (root.querySelector('#k-view')) views[tab](); else setTimeout(wait, 100); }; wait(); }
   function draw(orders, accepting) {
     if (!root.querySelector('#k-view')) { shell(accepting); if (tab !== 'orders') return shellTab(); }
-    counts();
     if (tab !== 'orders') return;
     const col = (s, t) => `<section><h2>${t} (${orders.filter((o) => o.status === s).length})</h2>${orders.filter((o) => o.status === s).map((o) => card(o, restaurant.timezone)).join('')}</section>`;
     const view = root.querySelector('#k-view');
@@ -122,13 +111,6 @@
   const view = () => root.querySelector('#k-view');
   const row = (label, value) => (value ? `<p><strong>${esc(label)}:</strong> ${esc(value)}</p>` : '');
   const views = {
-    async messages() {
-      const r = await staff('messages');
-      if (!r.ok) return showError(r.error);
-      view().innerHTML = `<div class="k-list">${r.rows.length ? r.rows.map((m) => `<article class="k-card k-new"><header><strong>${esc(m.kind.replace(/-/g, ' '))}</strong><span>${esc(new Date(m.created_at).toLocaleString('en-US', { timeZone: restaurant.timezone, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}</span></header>
-        ${Object.entries(m.data).filter(([k]) => k !== 'sms_consent').map(([k, v]) => row(k.replace(/_/g, ' '), v)).join('')}<div class="k-btns"><button data-done="${m.id}">Done</button></div></article>`).join('') : '<p class="k-empty">No new messages.</p>'}</div>`;
-      view().querySelectorAll('[data-done]').forEach((b) => { b.onclick = async () => { b.disabled = true; await staff('message', { id: b.dataset.done }); counts(); views.messages(); }; });
-    },
     rewards() {
       view().innerHTML = `<div class="k-list"><form class="k-tool" id="k-rw"><label>Member phone<input name="phone" type="tel" required></label><button>Find</button></form><div id="k-rw-out"></div></div>`;
       const out = view().querySelector('#k-rw-out');
