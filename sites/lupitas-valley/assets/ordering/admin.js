@@ -11,7 +11,7 @@
     set(v) { try { v ? localStorage.setItem(KEY, JSON.stringify(v)) : localStorage.removeItem(KEY); } catch { /* signs in again next load */ } },
   };
   let session = keep.get(), r = null, tab = 'dashboard', days = 30, menu = null;
-  const TABS = [['dashboard', 'Dashboard'], ['orders', 'Orders'], ['menu', 'Menu'], ['choices', 'Choices'], ['pairs', 'Popular and pairings'], ['settings', 'Settings']];
+  const TABS = [['dashboard', 'Dashboard'], ['orders', 'Orders'], ['reservations', 'Reservations'], ['menu', 'Menu'], ['choices', 'Choices'], ['pairs', 'Popular and pairings'], ['settings', 'Settings']];
 
   async function refresh() {
     const x = await fetch(`${AUTH}/token?grant_type=refresh_token`, { method: 'POST', headers: { apikey: cfg.key, 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh_token: session?.refresh_token }) });
@@ -27,6 +27,14 @@
     if (!x.ok) throw new Error(data?.message || 'That did not save.');
     return data;
   }
+  const staff = async (op, extra = {}) => {
+    const go = () => fetch(`${cfg.url}/functions/v1/ordering`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` }, body: JSON.stringify({ action: 'staff', restaurant: cfg.restaurant, op, ...extra }) });
+    let x = await go();
+    if (x.status === 401 && await refresh()) x = await go();
+    const d = await x.json();
+    if (!d.ok) throw new Error(d.error || 'That did not save.');
+    return d;
+  };
   const rpc = (fn, args) => call(`rpc/${fn}`, { method: 'POST', body: JSON.stringify(args) });
   const say = (msg, bad) => { const p = root.querySelector('#a-msg'); if (p) { p.textContent = msg; p.className = bad ? 'a-msg a-bad' : 'a-msg'; } };
   const attempt = async (fn, done = 'Saved.') => { try { await fn(); say(done); } catch (e) { if (e.message !== 'auth') say(e.message, true); } };
@@ -92,6 +100,12 @@
         a.href = URL.createObjectURL(new Blob([[heads.join(','), ...rows.map((o) => heads.map((h) => q(o[h])).join(','))].join('\n')], { type: 'text/csv' }));
         a.download = 'orders.csv'; a.click(); URL.revokeObjectURL(a.href);
       };
+    },
+    async reservations() {
+      const { rows } = await staff('reservations');
+      view().innerHTML = `<p class="a-help">Confirming or declining emails the guest once email is connected.</p>${rows.map((x) => `<section class="a-box"><h2>${esc(x.res_date)} at ${esc(x.res_time)}</h2><p>${x.status === 'requested' ? '<strong>Needs reply</strong>' : 'Confirmed'}</p><p>${esc(x.name)} · party of ${esc(x.party_size)}<br><a href="tel:${esc(x.phone)}">${esc(x.phone)}</a> · ${esc(x.email)}${x.requests ? `<br>${esc(x.requests)}` : ''}</p>
+        <div class="a-btns">${x.status === 'requested' ? `<button data-r="${x.id}" data-m="confirm" aria-label="Confirm ${esc(x.name)}">Confirm</button><button class="a-alt" data-r="${x.id}" data-m="decline" aria-label="Decline ${esc(x.name)}">Decline</button>` : `<button class="a-alt" data-r="${x.id}" data-m="cancel" aria-label="Cancel ${esc(x.name)}">Cancel</button>`}</div></section>`).join('') || '<p>No upcoming reservations.</p>'}`;
+      view().querySelectorAll('[data-r]').forEach((b) => { b.onclick = () => attempt(async () => { await staff('reservation', { id: b.dataset.r, move: b.dataset.m }); await views.reservations(); }); });
     },
     async menu() {
       menu = await rpc('admin_menu', { p_restaurant: r.id });

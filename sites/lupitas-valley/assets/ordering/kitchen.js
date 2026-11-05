@@ -75,7 +75,7 @@
       if (w && Date.now() - lastOk > 30000) w.hidden = false;
     }
   }
-  const TABS = [['orders', 'Orders'], ['reservations', 'Reservations'], ['messages', 'Messages'], ['rewards', 'Rewards'], ['gift', 'Gift cards']];
+  const TABS = [['orders', 'Orders'], ['messages', 'Messages'], ['rewards', 'Rewards'], ['gift', 'Gift cards']];
   const staff = (op, extra = {}) => act({ action: 'staff', restaurant: cfg.restaurant, op, ...extra });
   function shell(accepting) {
     root.innerHTML = `<header class="k-top"><h1>${esc(restaurant.name)}</h1><p class="k-offline" hidden>Connection lost. Retrying…</p>
@@ -89,9 +89,9 @@
   async function counts() {
     const c = await staff('counts').catch(() => null);
     if (!c?.ok) return;
-    if (seenCounts && (c.reservations > seenCounts.reservations || c.messages > seenCounts.messages)) beep();
+    if (seenCounts && c.messages > seenCounts.messages) beep();
     seenCounts = c;
-    for (const k of ['reservations', 'messages']) {
+    for (const k of ['messages']) {
       const b = root.querySelector(`[data-count="${k}"]`);
       if (b) { b.hidden = !c[k]; b.textContent = c[k]; }
     }
@@ -122,15 +122,6 @@
   const view = () => root.querySelector('#k-view');
   const row = (label, value) => (value ? `<p><strong>${esc(label)}:</strong> ${esc(value)}</p>` : '');
   const views = {
-    async reservations() {
-      const r = await staff('reservations');
-      if (!r.ok) return showError(r.error);
-      view().innerHTML = `<div class="k-list">${r.rows.length ? r.rows.map((x) => `<article class="k-card ${x.status === 'requested' ? 'k-new' : 'k-ready'}">
-        <header><strong>${esc(x.res_date)} · ${esc(x.res_time)}</strong><span>${x.status === 'requested' ? 'Needs reply' : 'Confirmed'}</span></header>
-        ${row('Name', x.name)}${row('Party', x.party_size)}<p><a href="tel:${esc(x.phone)}">${esc(x.phone)}</a> · ${esc(x.email)}</p>${row('Requests', x.requests)}
-        <div class="k-btns">${x.status === 'requested' ? `<button data-r="${x.id}" data-m="confirm">Confirm</button><button class="k-cancel" data-r="${x.id}" data-m="decline">Decline</button>` : `<button class="k-cancel" data-r="${x.id}" data-m="cancel">Cancel</button>`}</div></article>`).join('') : '<p class="k-empty">No upcoming reservations.</p>'}</div>`;
-      view().querySelectorAll('[data-r]').forEach((b) => { b.onclick = async () => { b.disabled = true; const o = await staff('reservation', { id: b.dataset.r, move: b.dataset.m }); if (!o.ok) showError(o.error); counts(); views.reservations(); }; });
-    },
     async messages() {
       const r = await staff('messages');
       if (!r.ok) return showError(r.error);
