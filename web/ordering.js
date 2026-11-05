@@ -88,6 +88,7 @@
       for (const c of menu.categories) for (const i of c.items) items.set(i.id, { item: i, category: c });
       cart = cart.filter((l) => items.has(l.id));
       render();
+      if (location.hash) document.getElementById(location.hash.slice(1))?.scrollIntoView();
       window.dispatchEvent(new CustomEvent('ro:ready'));
     } catch {
       /* keep the static menu already on the page */
@@ -107,9 +108,9 @@
         </label>
       </div>
       ${deliveryMode === 'link' && menu.restaurant.doordash_store_url ? `<p class="ro-note"><a href="${esc(menu.restaurant.doordash_store_url)}" rel="noopener">Order delivery on DoorDash</a></p>` : ''}
-      <nav class="ro-jump" aria-label="Menu categories">${pop.length ? '<a href="#ro-popular">Popular</a>' : ''}${cats.map((c) => `<a href="#ro-${c.id}">${esc(c.name)}</a>`).join('')}</nav>
+      <nav class="ro-jump" aria-label="Menu categories">${pop.length ? '<a href="#ro-popular">Popular</a>' : ''}${cats.map((c) => `<a href="#${slug(c.name)}">${esc(c.name)}</a>`).join('')}</nav>
       ${pop.length ? `<section class="ro-cat" id="ro-popular"><h2>Popular</h2><div class="ro-items">${pop.map(card).join('')}</div></section>` : ''}
-      ${cats.map((c) => `<section class="ro-cat" id="ro-${c.id}"><h2>${esc(c.name)}</h2>
+      ${cats.map((c) => `<section class="ro-cat" id="${slug(c.name)}"><h2>${esc(c.name)}</h2>
         ${c.note ? `<p class="ro-note">${esc(c.note)}</p>` : ''}${c.description ? `<p class="ro-note">${esc(c.description)}</p>` : ''}
         <div class="ro-items">${c.items.map(card).join('')}</div></section>`).join('')}
       <button class="ro-cartbtn" id="ro-open" type="button" hidden></button>`;
@@ -121,6 +122,7 @@
     watchJump();
   }
 
+  const slug = (n) => n.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   const canDeliver = () => ['drive', 'test'].includes(deliveryMode) && deliverySlots.length > 0;
   function setMode(mode) {
     fulfillment = mode;

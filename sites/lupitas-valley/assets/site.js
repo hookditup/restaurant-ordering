@@ -136,6 +136,53 @@
     requestAnimationFrame(step);
   });
 
+  // Home and tag pages start from saved text, then update from the live menu.
+  // If the live menu can't load, guests still see the saved version.
+  var feats = document.querySelector('.feats'), cards = document.querySelectorAll('.item[data-item]');
+  if (window.RO && (feats || cards.length)) {
+    var clean = function (t) { var d = document.createElement('div'); d.textContent = t == null ? '' : t; return d.innerHTML.replace(/"/g, '&quot;'); };
+    var slug = function (n) { return n.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); };
+    var fromPrice = function (i) {
+      var min = i.price_cents, more = false;
+      i.groups.forEach(function (g) {
+        var p = g.options.map(function (o) { return o.price_cents; });
+        if (g.min > 0 && p.length) { var low = Math.min.apply(null, p); min += low; if (Math.max.apply(null, p) > low) more = true; }
+      });
+      return '$' + (min / 100).toFixed(2) + (more ? '+' : '');
+    };
+    fetch(RO.url + '/rest/v1/rpc/get_menu', { method: 'POST', headers: { apikey: RO.key, 'Content-Type': 'application/json' }, body: JSON.stringify({ p_slug: RO.restaurant }) })
+      .then(function (r) { if (!r.ok) throw new Error('menu'); return r.json(); })
+      .then(function (m) {
+        var byExt = {}, byName = {};
+        m.categories.forEach(function (c) {
+          c.items.forEach(function (i) {
+            byExt[i.ext] = i;
+            if (!byName[i.name] || (!byName[i.name].item.image && i.image)) byName[i.name] = { item: i, cat: c.name };
+          });
+        });
+        if (feats && m.popular.length) {
+          feats.innerHTML = m.popular.filter(function (n) { return byName[n]; }).map(function (n) {
+            var h = byName[n], i = h.item;
+            return '<a class="feat" href="/menu#' + slug(h.cat) + '">' + (i.image ? '<img src="' + clean(i.image) + '" alt="' + clean(i.name) + '" width="400" height="300" loading="lazy" decoding="async">' : '<i class="feat-noimg"></i>') + '<span>' + clean(i.name) + '</span></a>';
+          }).join('');
+        }
+        cards.forEach(function (card) {
+          var i = byExt[card.getAttribute('data-item')];
+          if (!i) { card.remove(); return; } // sold out
+          card.querySelector('h3').textContent = i.name;
+          card.querySelector('p').textContent = i.description || '';
+          card.querySelector('.price').textContent = fromPrice(i);
+          var pic = card.querySelector('img');
+          if (i.image) {
+            if (!pic) { pic = document.createElement('img'); pic.width = 400; pic.height = 300; pic.loading = 'lazy'; card.appendChild(pic); card.classList.remove('noimg'); }
+            if (pic.getAttribute('src') !== i.image) pic.src = i.image;
+            pic.alt = i.name;
+          } else if (pic) { pic.remove(); card.classList.add('noimg'); }
+        });
+      })
+      .catch(function () { /* the saved version stays on the page */ });
+  }
+
   // Forms
   document.querySelectorAll('form[data-form]').forEach(function (f) {
     f.addEventListener('submit', function (ev) {
