@@ -26,7 +26,7 @@ h2{font-size:clamp(1.7rem,4vw,2.5rem);font-weight:400}h3{font-size:1.25rem}p{mar
 .mob{display:none;position:relative}.mob summary{list-style:none;min-width:44px;min-height:44px;display:grid;place-items:center;cursor:pointer}
 .mob-pop{position:absolute;right:0;top:100%;width:min(280px,calc(100vw - 32px));max-height:75vh;overflow:auto;background:#fff;border:1px solid var(--line);border-radius:var(--r);box-shadow:0 8px 24px rgb(0 0 0/.14);padding:.4rem}
 .mob-pop a{display:block;padding:.7rem;color:var(--ink);text-decoration:none}
-.hero{position:relative;min-height:min(78vh,640px);display:flex;align-items:flex-end;background:#1c1014 url(/img/site/best-mexican-food-heber-city.webp) center/cover;overflow:hidden}
+.hero{position:relative;min-height:min(78vh,640px);display:flex;align-items:flex-end;background:#1c1014 url(/img/site/hero-poster.webp) center/cover;overflow:hidden}
 .hero video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
 .hero-scrim{position:absolute;inset:0;background:linear-gradient(to top,rgb(0 0 0/.72),rgb(0 0 0/.15) 55%,transparent)}
 .hero-t{position:relative;padding-block:2.5rem;color:#fff}.hero h1{font:600 1.15rem/1.3 var(--sans);color:#fff;margin:0 0 .5rem}

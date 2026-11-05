@@ -8,11 +8,6 @@
       "permanent": true
     },
     {
-      "source": "/tags/delivery",
-      "destination": "/menu",
-      "permanent": true
-    },
-    {
       "source": "/heber-city",
       "destination": "/",
       "permanent": true

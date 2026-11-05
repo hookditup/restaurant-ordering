@@ -53,7 +53,7 @@ def image(i):
             except Exception as e:
                 print('no image for', i['name'], e)
                 return None
-    return f'/img/menu/{s}.webp' if i.get('image') else None
+    return f'/img/menu/{s}-heber-city.webp' if i.get('image') else None
 
 
 used, queue = [], [x for i in m['items'] for x in i['modifierSets']]
