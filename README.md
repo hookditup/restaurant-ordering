@@ -39,7 +39,7 @@ Add `<div id="ro-gift"></div>` and `<div id="ro-rewards"></div>` with `guest-too
 
 ## Popular and pairings
 
-The menu opens with the dishes in the most picked-up orders over `popular_days`, once there are `popular_min_orders` orders. Until then it shows dishes marked Featured. Pairings appear in the item popup and cart, and apply to the lunch and dinner versions of a dish.
+The menu opens with the dishes in the most picked-up orders over `popular_days`, once there are `popular_min_orders` orders. Until then it shows dishes marked Featured. Pairings appear in the item popup and cart, and apply to the lunch and dinner versions of a dish. Hand-picked pairs come first. With `pairs_auto` on, dishes on at least `pairs_min_orders` shared picked-up orders in the last `pairs_days` days fill the open spots, up to six, when they appear together more often than chance. Order data counts only in the matching mode, so test orders never affect a live restaurant.
 
 ## Delivery
 

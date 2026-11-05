@@ -186,19 +186,26 @@
       view().querySelectorAll('.a-opt').forEach((f) => { f.onsubmit = (e) => { e.preventDefault(); attempt(() => rpc('admin_save_option', { p_option: f.dataset.id, p: { price_cents: toCents(f.elements.price.value), available: !f.elements.soldout.checked } })); }; });
     },
     async pairs() {
-      const [m, ideas, slugged] = await Promise.all([rpc('admin_menu', { p_restaurant: r.id }), rpc('admin_pair_ideas', { p_restaurant: r.id }), call(`restaurants?select=popular_days,popular_min_orders,popular_count&id=eq.${r.id}`)]);
+      const [m, ideas, slugged, live] = await Promise.all([rpc('admin_menu', { p_restaurant: r.id }), rpc('admin_pair_ideas', { p_restaurant: r.id }), call(`restaurants?select=popular_days,popular_min_orders,popular_count,pairs_auto,pairs_days,pairs_min_orders&id=eq.${r.id}`), rpc('get_menu', { p_slug: cfg.restaurant })]);
       const names = new Map();
       m.categories.forEach((c) => c.items.forEach((i) => { if (!names.has(i.name)) names.set(i.name, i); }));
       const all = [...names.values()].sort((a, b) => a.name.localeCompare(b.name));
       const byId = new Map(); m.categories.forEach((c) => c.items.forEach((i) => byId.set(i.id, i)));
       const s = slugged[0];
+      const liveById = new Map(), learned = new Map();
+      live.categories.forEach((c) => c.items.forEach((i) => liveById.set(i.id, i.name)));
+      live.categories.forEach((c) => c.items.forEach((i) => { const set = new Set((names.get(i.name)?.pairs || []).map((id) => byId.get(id)?.name)); const extra = i.pairs.map((id) => liveById.get(id)).filter((n) => n && !set.has(n)); if (extra.length) learned.set(i.name, extra); }));
       const pick = (i, n) => { const cur = byId.get(i.pairs[n])?.name; return `<select name="p${n}" aria-label="${esc(i.name)} pairing ${n + 1}"><option value="">None</option>${all.filter((x) => x.name !== i.name).map((x) => `<option value="${x.id}"${x.name === cur ? ' selected' : ''}>${esc(x.name)}</option>`).join('')}</select>`; };
       view().innerHTML = `<section class="a-box"><h2>Popular dishes</h2><p class="a-help">The menu opens with the most-ordered dishes once there are enough picked-up orders. Until then it shows dishes marked Featured in the Menu tab.</p>
         <form id="a-pop" class="a-form"><label>Count orders from the last (days)<input name="popular_days" type="number" min="1" max="365" value="${s.popular_days}"></label><label>Orders needed first<input name="popular_min_orders" type="number" min="0" value="${s.popular_min_orders}"></label><label>Dishes to show<input name="popular_count" type="number" min="1" max="24" value="${s.popular_count}"></label><button>Save</button></form></section>
+        <section class="a-box"><h2>Automatic pairings</h2><p class="a-help">Dishes guests often order together fill the spots left after your picks, up to six per dish.</p>
+        <form id="a-auto" class="a-form"><label class="a-check"><input name="pairs_auto" type="checkbox"${s.pairs_auto ? ' checked' : ''}> Use automatic pairings</label><label>Count orders from the last (days)<input name="pairs_days" type="number" min="1" max="365" value="${s.pairs_days}"></label><label>Shared orders needed<input name="pairs_min_orders" type="number" min="1" max="1000" value="${s.pairs_min_orders}"></label><button>Save</button></form>
+        ${learned.size ? `<h3>Showing now</h3><ul>${[...learned].sort(([a], [b]) => a.localeCompare(b)).map(([n, l]) => `<li>${esc(n)}: ${l.map(esc).join(', ')}</li>`).join('')}</ul>` : '<p>Automatic pairings appear here once enough orders come in.</p>'}</section>
         <section class="a-box"><h2>Often ordered together</h2>${ideas.length ? `<ul>${ideas.map((x) => `<li>${esc(x.a)} and ${esc(x.b)}: ${x.orders} orders</li>`).join('')}</ul>` : '<p>Suggestions appear here once orders come in.</p>'}</section>
-        <section class="a-box"><h2>Pairings</h2><p class="a-help">Guests see these in the item popup and cart. Each dish can have up to three here.</p>
+        <section class="a-box"><h2>Pairings</h2><p class="a-help">Guests see these first in the item popup and cart. Each dish can have up to three here.</p>
         ${all.map((i) => `<details class="a-cat"><summary>${esc(i.name)} <small>${i.pairs.length} set</small></summary><form class="a-pair" data-id="${i.id}">${[0, 1, 2].map((n) => pick(i, n)).join('')}<button aria-label="Save pairings for ${esc(i.name)}">Save</button></form></details>`).join('')}</section>`;
       view().querySelector('#a-pop').onsubmit = (e) => { e.preventDefault(); attempt(() => rpc('admin_save_settings', { p_restaurant: r.id, p: Object.fromEntries(new FormData(e.target).entries()) })); };
+      view().querySelector('#a-auto').onsubmit = (e) => { e.preventDefault(); const f = e.target; attempt(async () => { await rpc('admin_save_pair_rules', { p_restaurant: r.id, p: { pairs_auto: f.elements.pairs_auto.checked, pairs_days: f.elements.pairs_days.value, pairs_min_orders: f.elements.pairs_min_orders.value } }); await views.pairs(); }); };
       view().querySelectorAll('.a-pair').forEach((f) => { f.onsubmit = (e) => { e.preventDefault(); attempt(() => rpc('admin_set_pairs', { p_item: f.dataset.id, p_pairs: [...f.querySelectorAll('select')].map((x) => x.value).filter(Boolean) })); }; });
     },
     async settings() {

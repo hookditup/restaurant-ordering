@@ -82,6 +82,15 @@ await rpc('admin_save_settings', { p_restaurant: rid, p: { popular_min_orders: 1
 m = await menu(); assert.ok(m.popular.includes('Tacos')); ok('Popular ranks real orders once there are enough');
 await rpc('admin_save_settings', { p_restaurant: rid, p: { popular_min_orders: settings[0].popular_min_orders } });
 
+const rules = (p) => rpc('admin_save_pair_rules', { p_restaurant: rid, p });
+assert.ok((await fetch(`${U}/rest/v1/rpc/auto_pairs`, { method: 'POST', headers: { apikey: KEY, 'Content-Type': 'application/json' }, body: JSON.stringify({ rid }) })).status >= 400); ok('auto_pairs is not public');
+assert.equal((await fetch(`${U}/rest/v1/rpc/admin_save_pair_rules`, { method: 'POST', headers: { apikey: KEY, 'Content-Type': 'application/json' }, body: JSON.stringify({ p_restaurant: rid, p: {} }) })).status >= 400, true); ok('guests cannot change pairing rules');
+const stock = (await (await fetch(`${U}/rest/v1/restaurants?select=pairs_auto,pairs_days,pairs_min_orders&id=eq.${rid}`, { headers: { apikey: KEY, Authorization: `Bearer ${T}` } })).json())[0];
+await rules({ pairs_auto: false, pairs_days: 30, pairs_min_orders: 7 });
+const saved = (await (await fetch(`${U}/rest/v1/restaurants?select=pairs_auto,pairs_days,pairs_min_orders&id=eq.${rid}`, { headers: { apikey: KEY, Authorization: `Bearer ${T}` } })).json())[0];
+assert.deepEqual(saved, { pairs_auto: false, pairs_days: 30, pairs_min_orders: 7 }); ok('manager saves pairing rules');
+await rules(stock); // test/auto-pairs-check.sql covers the pairing logic
+
 const png = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='), (c) => c.charCodeAt(0));
 const path = `menu-images/${rid}/test-heber-city-${Date.now()}.png`;
 const up = await fetch(`${U}/storage/v1/object/${path}`, { method: 'POST', headers: { apikey: KEY, Authorization: `Bearer ${T}`, 'Content-Type': 'image/png' }, body: png });
