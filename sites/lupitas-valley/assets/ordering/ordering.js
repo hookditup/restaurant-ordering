@@ -88,7 +88,9 @@
       for (const c of menu.categories) for (const i of c.items) items.set(i.id, { item: i, category: c });
       cart = cart.filter((l) => items.has(l.id));
       render();
-      if (location.hash) document.getElementById(location.hash.slice(1))?.scrollIntoView();
+      // Photos and fonts can move the page while it loads, so settle on the section again.
+      const goTo = () => document.getElementById(location.hash.slice(1))?.scrollIntoView({ behavior: 'instant' });
+      if (location.hash) { goTo(); setTimeout(goTo, 600); }
       window.dispatchEvent(new CustomEvent('ro:ready'));
     } catch {
       /* keep the static menu already on the page */
