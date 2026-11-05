@@ -117,7 +117,7 @@
 
   const card = (i) => `<button class="ro-item" type="button" data-item="${i.id}">
       <span class="ro-item-t"><strong>${esc(i.name)}</strong><span>${esc(i.description)}</span><b>${fromPrice(i)}</b></span>
-      ${i.image ? `<img src="${esc(i.image)}" alt="" width="110" height="110" loading="lazy">` : ''}
+      ${i.image ? `<img src="${esc(i.image)}" alt="${esc(i.name)}" width="110" height="110" loading="lazy">` : ''}
     </button>`;
 
   function updateCartButton() {

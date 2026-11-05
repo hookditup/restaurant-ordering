@@ -11,10 +11,12 @@
     accepted: 'The kitchen is making your order.', ready: 'Your order is ready for pickup!', completed: 'Picked up. Thank you!',
     cancelled: 'This order was cancelled.', expired: 'This order expired before payment finished.',
   };
-  let timer;
+  let timer, shown = '';
   async function load() {
     const r = await fetch(`${cfg.url}/functions/v1/ordering`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'status', token }) }).then((x) => x.json()).catch(() => null);
     if (!r?.ok) { box.innerHTML = '<h1>Order not found</h1><p>Please check your link, or call the restaurant.</p>'; return; }
+    if (JSON.stringify(r.order) === shown) return; // only announce real changes
+    shown = JSON.stringify(r.order);
     const o = r.order, tz = o.restaurant.timezone;
     const when = new Date(o.pickup_at).toLocaleString('en-US', { timeZone: tz, weekday: 'long', hour: 'numeric', minute: '2-digit' });
     const step = STEP[o.status];

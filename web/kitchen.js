@@ -79,7 +79,7 @@
     root.innerHTML = `<header class="k-top"><h1>${esc(restaurant.name)}</h1><p class="k-offline" hidden>Connection lost. Retrying…</p>
       <button class="k-pause ${accepting ? '' : 'off'}">${accepting ? 'Taking orders · Pause' : 'PAUSED · Resume'}</button><button class="k-out">Sign out</button></header>
       <nav class="k-tabs">${TABS.map(([k, t]) => `<button data-tab="${k}"${k === tab ? ' aria-current="page"' : ''}>${t}<span class="k-badge" data-count="${k}" hidden></span></button>`).join('')}</nav>
-      <main id="k-view"></main>`;
+      <div id="k-view"></div>`;
     root.querySelector('.k-out').onclick = () => { session = null; keep.set(null); loginView(); };
     root.querySelector('.k-pause').onclick = async () => { await act({ action: 'pause', restaurant: cfg.restaurant, accepting: !accepting }); root.innerHTML = ''; tick(); };
     root.querySelectorAll('[data-tab]').forEach((b) => { b.onclick = () => { tab = b.dataset.tab; root.innerHTML = ''; tick(); }; });

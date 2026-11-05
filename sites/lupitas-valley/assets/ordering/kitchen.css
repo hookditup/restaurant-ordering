@@ -3,22 +3,22 @@ button,input{font:inherit}a{color:inherit}
 .k-login{max-width:340px;margin:12vh auto;padding:1.5rem;background:#23262c;border-radius:12px;display:grid;gap:.8rem}
 .k-login h1{margin:0;font-size:1.4rem}.k-login label{display:grid;gap:.3rem;font-weight:600}
 .k-login input,.k-ask input{min-height:46px;padding:.5rem .7rem;border-radius:8px;border:1px solid #6b7280;background:#fff;color:#111}
-.k-login button{min-height:48px;border:0;border-radius:8px;background:#2f9e5f;color:#fff;font-weight:700}
+.k-login button{min-height:48px;border:0;border-radius:8px;background:#1f7a45;color:#fff;font-weight:700}
 .k-err{color:#ff9b9b;margin:0;min-height:1.2em}
 .k-top{display:flex;align-items:center;gap:.6rem;padding:.6rem .8rem;background:#23262c}
 .k-top h1{font-size:1.1rem;margin:0 auto 0 0}.k-offline{background:#a83232;padding:.3rem .6rem;border-radius:6px;margin:0}
 .k-top button{min-height:44px;padding:0 .9rem;border-radius:8px;border:0;background:#3a3f48;color:#fff;font-weight:600}
-.k-pause{background:#2f9e5f!important}.k-pause.off{background:#c0392b!important}
+.k-pause{background:#1f7a45!important}.k-pause.off{background:#c0392b!important}
 .k-cols{display:grid;grid-template-columns:repeat(3,1fr);gap:.7rem;padding:.7rem}
 .k-cols h2{font-size:1rem;margin:0 0 .5rem;color:#c9ccd3}
 .k-card{background:#fff;color:#111;border-radius:10px;padding:.7rem;margin-bottom:.7rem;border-left:8px solid #6b7280}
-.k-new{border-color:#e03131}.k-accepted{border-color:#e8a400}.k-ready{border-color:#2f9e5f}
+.k-new{border-color:#e03131}.k-accepted{border-color:#e8a400}.k-ready{border-color:#1f7a45}
 .k-card header{display:flex;justify-content:space-between;font-size:1.05rem}
 .k-who{margin:.2rem 0;color:#333;font-size:.9rem}
 .k-card ul{list-style:none;margin:.4rem 0;padding:0}.k-card li{padding:.3rem 0;border-top:1px solid #e5e7eb}
 .k-card li span{display:block;font-size:.92rem;color:#333}.k-card li em{display:block;color:#b00020;font-style:normal;font-weight:700}
 .k-note{background:#fff4d6;padding:.4rem;border-radius:6px;font-weight:600}.k-total{text-align:right;margin:.2rem 0;font-weight:700}
-.k-btns{display:flex;gap:.4rem}.k-btns button{flex:1;min-height:52px;border:0;border-radius:8px;background:#2f9e5f;color:#fff;font-weight:700;font-size:1.05rem}
+.k-btns{display:flex;gap:.4rem}.k-btns button{flex:1;min-height:52px;border:0;border-radius:8px;background:#1f7a45;color:#fff;font-weight:700;font-size:1.05rem}
 .k-btns .k-cancel{flex:0 0 84px;background:#e5e7eb;color:#333;font-size:.9rem}
 .k-ask{display:grid;gap:.7rem;min-width:300px}.k-ask h2,.k-ask p{margin:0}.k-ask label{display:grid;gap:.3rem}.k-ask div{display:flex;gap:.5rem}
 .k-ask button{flex:1;min-height:46px;border:0;border-radius:8px;background:#e5e7eb}.k-ask .k-cancel{background:#c0392b;color:#fff}
@@ -27,8 +27,8 @@ button,input{font:inherit}a{color:inherit}
 .k-tabs{display:flex;gap:.3rem;overflow-x:auto;padding:.45rem .7rem;background:#1d2025}
 .k-tabs button{flex:none;min-height:44px;padding:0 .9rem;border:0;border-radius:8px;background:#2c3038;color:#fff;font-weight:600}
 .k-tabs button[aria-current]{background:#f3f4f6;color:#111}
-.k-badge{display:inline-block;margin-left:.4rem;min-width:1.4em;padding:0 .3em;border-radius:999px;background:#e03131;color:#fff;font-size:.8rem;text-align:center}
+.k-badge{display:inline-block;margin-left:.4rem;min-width:1.4em;padding:0 .3em;border-radius:999px;background:#c92a2a;color:#fff;font-size:.8rem;text-align:center}
 .k-list{max-width:640px;margin:0 auto;padding:.7rem}.k-card p{margin:.2rem 0}.k-empty{color:#c9ccd3;text-align:center;padding:2rem 0}
 .k-tool{display:flex;flex-wrap:wrap;gap:.5rem;align-items:flex-end;margin:.7rem 0}.k-tool label{flex:1 1 200px;display:grid;gap:.25rem;font-weight:600}
 .k-tool input{min-height:46px;padding:.5rem .7rem;border-radius:8px;border:1px solid #6b7280;background:#fff;color:#111}
-.k-tool button{min-height:46px;padding:0 1rem;border:0;border-radius:8px;background:#2f9e5f;color:#fff;font-weight:700}
+.k-tool button{min-height:46px;padding:0 1rem;border:0;border-radius:8px;background:#1f7a45;color:#fff;font-weight:700}

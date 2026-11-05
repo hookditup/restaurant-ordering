@@ -84,7 +84,19 @@
     return queue;
   })('.jump')();
 
-  // Auto-scrolling rows. Guests can swipe them. They stop on hover or focus, and briefly after a touch.
+  // Pause button for anything that moves on its own (WCAG 2.2.2)
+  var moveBtn = function (label, after, onToggle, cls) {
+    var b = document.createElement('button'), off = false;
+    b.type = 'button'; b.className = 'move-btn' + (cls || ''); b.textContent = 'Pause'; b.setAttribute('aria-label', 'Pause ' + label);
+    b.addEventListener('click', function () { off = !off; b.textContent = off ? 'Play' : 'Pause'; b.setAttribute('aria-label', (off ? 'Play ' : 'Pause ') + label); onToggle(off); });
+    after(b);
+  };
+  var heroVideo = document.querySelector('.hero video');
+  if (heroVideo && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    moveBtn('background video', function (b) { heroVideo.parentNode.appendChild(b); }, function (off) { if (off) heroVideo.pause(); else heroVideo.play(); }, ' hero-btn');
+  }
+
+  // Auto-scrolling rows. Guests can swipe them. They stop on hover or focus, briefly after a touch, or with Pause.
   document.querySelectorAll('[data-scroller]').forEach(function (box) {
     if (matchMedia('(prefers-reduced-motion: reduce)').matches || !window.requestAnimationFrame) return;
     var track = box.querySelector('.scroller-track'), items = [].slice.call(track.children);
@@ -97,7 +109,9 @@
     });
     var speed = +box.getAttribute('data-scroller'), pos = 0, last = 0, held = 0, paused = false, seen = true;
     var hold = function () { held = Date.now() + 2500; };
-    var stop = function () { paused = true; }, go = function () { paused = false; };
+    var user = false, over = false;
+    moveBtn(box.getAttribute('aria-label'), function (b) { box.parentNode.insertBefore(b, box.nextSibling); }, function (off) { user = off; paused = user || over; });
+    var stop = function () { over = true; paused = true; }, go = function () { over = false; paused = user; };
     box.addEventListener('mouseenter', stop); box.addEventListener('mouseleave', go);
     box.addEventListener('focusin', stop); box.addEventListener('focusout', go);
     ['touchstart', 'touchmove', 'wheel'].forEach(function (ev) { box.addEventListener(ev, hold, { passive: true }); });

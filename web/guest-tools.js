@@ -25,7 +25,7 @@
     const min = info.gift_min_cents ?? 1000, max = info.gift_max_cents ?? 50000;
     let amount = 5000;
     const buy = () => `${info.test_mode ? '<p class="ro-test">Test mode. No real gift cards or charges.</p>' : ''}
-      <section class="ro-box"><h2>Buy a gift card</h2><form id="ro-gift-buy" novalidate>
+      <section class="ro-box"><h2>Order your gift card today</h2><form id="ro-gift-buy" novalidate>
         <div class="ro-amounts">${[2500, 5000, 7500, 10000].map((c) => `<button type="button" data-amount="${c}"${c === amount ? ' aria-pressed="true"' : ''}>$${c / 100}</button>`).join('')}</div>
         ${field('amount', 'Amount in dollars', 'number', `min="${min / 100}" max="${max / 100}" step="1" inputmode="numeric" value="${amount / 100}" required`)}
         <div class="ro-two">${field('buyer_name', 'Your name', 'text', 'autocomplete="name" required')}${field('buyer_email', 'Your email', 'email', 'autocomplete="email" required')}</div>
