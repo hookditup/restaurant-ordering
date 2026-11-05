@@ -66,4 +66,16 @@
 .ro-code { font: 700 1.3rem/1.4 ui-monospace, Menlo, Consolas, monospace; letter-spacing: .06em; background: var(--ro-soft); padding: .7rem; border-radius: 8px; text-align: center; overflow-wrap: anywhere; }
 .ro-ok { color: #14652d; font-weight: 600; margin: .4rem 0 0; }
 .ro-ok:empty { display: none; }
+.ro-bar { flex-wrap: wrap; align-items: flex-end; }
+.ro-mode { border: 0; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: .4rem; }
+.ro-mode legend { font-weight: 600; padding: 0; margin-bottom: .25rem; }
+.ro-mode label { flex-direction: row; width: auto; font-weight: 500; }
+.ro-mode input { position: absolute; opacity: 0; }
+.ro-mode span { display: inline-flex; align-items: center; min-height: 44px; padding: 0 1rem; border: 1px solid #8c8c8c; border-radius: 8px; background: #fff; cursor: pointer; }
+.ro-mode input:checked + span { background: var(--ro-accent); color: #fff; border-color: var(--ro-accent); }
+.ro-mode input:focus-visible + span { outline: 3px solid var(--ro-accent); outline-offset: 2px; }
+.ro-pairs { border-top: 1px solid var(--ro-line); padding: .7rem 0; }
+.ro-pairs h3 { font-size: 1rem; margin: 0 0 .4rem; }
+.ro-pair { display: flex; width: 100%; justify-content: space-between; gap: 1rem; align-items: center; min-height: 44px; padding: .4rem .7rem; margin-bottom: .35rem; border: 1px solid #8c8c8c; border-radius: 8px; background: #fff; color: var(--ro-ink); font: inherit; cursor: pointer; text-align: left; }
+.ro-address { border-top: 1px solid var(--ro-line); padding: .7rem 0; margin: 0; }
 @media (max-width: 768px) { .ro-items { grid-template-columns: 1fr; } .ro-jump { top: 64px; } .ro-cartbtn { bottom: 68px; } .ro-item img { width: 88px; height: 88px; } }

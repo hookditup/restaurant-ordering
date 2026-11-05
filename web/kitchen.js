@@ -49,9 +49,11 @@
 
   const card = (o, tz) => {
     const when = new Date(o.pickup_at).toLocaleString('en-US', { timeZone: tz, weekday: 'short', hour: 'numeric', minute: '2-digit' });
-    const b = { new: [['accept', 'Accept']], accepted: [['ready', 'Ready']], ready: [['complete', 'Picked up']] }[o.status];
+    const out = o.fulfillment === 'delivery', a = o.delivery_address;
+    const b = { new: [['accept', out ? 'Accept and send driver' : 'Accept']], accepted: [['ready', 'Ready']], ready: [['complete', out ? 'Driver took it' : 'Picked up']] }[o.status];
     return `<article class="k-card k-${o.status}"><header><strong>#${esc(o.order_no)}</strong><span>${esc(when)}</span></header>
       <p class="k-who">${esc(o.first_name)} ${esc(o.last_name)} · <a href="tel:${esc(o.phone)}">${esc(o.phone)}</a>${o.test_mode ? ' · TEST' : ''}</p>
+      ${out ? `<p class="k-note"><strong>DELIVERY</strong>${a ? ` · ${esc(a.street)}${a.unit ? ` ${esc(a.unit)}` : ''}, ${esc(a.city)}` : ''}${a?.instructions ? `<br>${esc(a.instructions)}` : ''}${o.delivery_status === 'failed' ? '<br><strong>Driver request failed. Call DoorDash or the guest.</strong>' : ''}</p>` : ''}
       <ul>${o.order_items.map((i) => `<li><strong>${i.qty} × ${esc(i.name)}</strong>${i.options.length ? `<span>${esc(i.options.map((x) => x.name).join(', '))}</span>` : ''}${i.note ? `<em>${esc(i.note)}</em>` : ''}</li>`).join('')}</ul>
       ${o.note ? `<p class="k-note">${esc(o.note)}</p>` : ''}<p class="k-total">${money(o.total_cents)}</p>
       <div class="k-btns">${b.map(([m, t]) => `<button data-id="${o.id}" data-move="${m}">${t}</button>`).join('')}<button class="k-cancel" data-id="${o.id}" data-move="cancel">Cancel</button></div></article>`;
@@ -59,7 +61,7 @@
 
   async function tick() {
     try {
-      const orders = await api(`orders?select=id,order_no,status,pickup_at,first_name,last_name,phone,note,total_cents,test_mode,order_items(name,qty,options,note)&restaurant_id=eq.${restaurant.id}&status=in.(new,accepted,ready)&order=pickup_at.asc`);
+      const orders = await api(`orders?select=id,order_no,status,fulfillment,delivery_address,delivery_status,pickup_at,first_name,last_name,phone,note,total_cents,test_mode,order_items(name,qty,options,note)&restaurant_id=eq.${restaurant.id}&status=in.(new,accepted,ready)&order=pickup_at.asc`);
       const [r] = await api(`restaurants?select=accepting_orders&id=eq.${restaurant.id}`);
       lastOk = Date.now();
       const fresh = orders.filter((o) => o.status === 'new' && !seen.has(o.id));

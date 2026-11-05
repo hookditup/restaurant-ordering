@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { categoryOpenAt, cleanGuest, isOpenAt, OrderError, pickupSlots, priceCart, priceLine, totals, validPickup, zoned, applyGift, cleanCode, makeCode, normPhone, validReservationDate } from '../supabase/functions/ordering/core.js';
+import { categoryOpenAt, cleanGuest, isOpenAt, OrderError, pickupSlots, priceCart, priceLine, totals, validPickup, zoned, applyGift, cleanCode, makeCode, normPhone, validReservationDate, cleanAddress, addressLine } from '../supabase/functions/ordering/core.js';
 
 const hours = { mon: [['10:30', '21:00']], tue: [['10:30', '21:00']], wed: [['10:30', '21:00']], thu: [['10:30', '21:00']], fri: [['10:30', '22:00']], sat: [['10:30', '22:00']] };
 const r = { timezone: 'America/Denver', hours, tax_rate_bps: 865, guest_fee_bps: 0, pickup_lead_minutes: 20, last_order_minutes_before_close: 0, accepting_orders: true };
@@ -59,7 +59,7 @@ test('bad quantities are rejected', () => {
 });
 test('totals', () => {
   const t = totals([{ line_total_cents: 2000 }], r, 300);
-  assert.deepEqual(t, { subtotal_cents: 2000, discount_cents: 0, guest_fee_cents: 0, tax_cents: 173, tip_cents: 300, total_cents: 2473 });
+  assert.deepEqual(t, { subtotal_cents: 2000, discount_cents: 0, guest_fee_cents: 0, tax_cents: 173, tip_cents: 300, delivery_fee_cents: 0, total_cents: 2473 });
   assert.equal(totals([{ line_total_cents: 2000 }], { ...r, guest_fee_bps: 300 }, 0).guest_fee_cents, 60);
   assert.equal(totals([{ line_total_cents: 1000 }], r, -500).tip_cents, 0);
 });
@@ -99,7 +99,7 @@ test('real menu: every required group can be satisfied and prices are sane', () 
 test('rewards discount lowers tax and never goes below zero', () => {
   const lines = [{ line_total_cents: 1000 }];
   const r = { guest_fee_bps: 0, tax_rate_bps: 1000 };
-  assert.deepEqual(totals(lines, r, 0, 500), { subtotal_cents: 1000, discount_cents: 500, guest_fee_cents: 0, tax_cents: 50, tip_cents: 0, total_cents: 550 });
+  assert.deepEqual(totals(lines, r, 0, 500), { subtotal_cents: 1000, discount_cents: 500, guest_fee_cents: 0, tax_cents: 50, tip_cents: 0, delivery_fee_cents: 0, total_cents: 550 });
   assert.equal(totals(lines, r, 0, 5000).total_cents, 0);
 });
 
@@ -124,4 +124,16 @@ test('reservation dates must be open days, today or later', () => {
   assert.equal(validReservationDate(r, '2026-11-08', now), false); // closed
   assert.equal(validReservationDate(r, '2026-11-02', now), false); // past
   assert.equal(validReservationDate(r, 'soon', now), false);
+});
+
+test('delivery fee adds to the total but not to tax', () => {
+  const t = totals([{ line_total_cents: 1000 }], { guest_fee_bps: 0, tax_rate_bps: 1000 }, 0, 0, 599);
+  assert.equal(t.tax_cents, 100); assert.equal(t.delivery_fee_cents, 599); assert.equal(t.total_cents, 1699);
+});
+
+test('delivery address is checked', () => {
+  const a = cleanAddress({ street: '100 Main St', unit: '#2', city: 'Heber City', zip: '84032' });
+  assert.equal(addressLine(a), '100 Main St #2, Heber City, UT 84032');
+  assert.throws(() => cleanAddress({ street: '1 A', city: 'Heber', zip: '12' }), /ZIP/);
+  assert.throws(() => cleanAddress({ zip: '84032' }), /street/);
 });

@@ -15,7 +15,7 @@
     set(v) { try { localStorage.setItem(KEY, JSON.stringify(v)); } catch { /* cart still works this visit */ } },
   };
 
-  let menu, slots = [], pickup = null, cart = store.get(), tip = 0, tipPct = 0, accepting = true;
+  let menu, slots = [], pickupSlotsList = [], deliverySlots = [], deliveryMode = 'off', fulfillment = 'pickup', pickup = null, cart = store.get(), tip = 0, tipPct = 0, accepting = true;
   const items = new Map();
 
   const post = (body) => fetch(API, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ restaurant: cfg.restaurant, ...body }) }).then((r) => r.json());
@@ -82,7 +82,8 @@
         fetch(`${cfg.url}/rest/v1/rpc/get_menu`, { method: 'POST', headers: { apikey: cfg.key, 'Content-Type': 'application/json' }, body: JSON.stringify({ p_slug: cfg.restaurant }) }).then((r) => r.json()),
         post({ action: 'slots' }),
       ]);
-      menu = m; slots = s.slots || []; accepting = s.accepting !== false && slots.length > 0;
+      menu = m; pickupSlotsList = slots = s.slots || []; deliverySlots = s.delivery_slots || []; deliveryMode = s.delivery_mode || 'off';
+      accepting = s.accepting !== false && slots.length > 0;
       pickup = slots[0] || null;
       for (const c of menu.categories) for (const i of c.items) items.set(i.id, { item: i, category: c });
       cart = cart.filter((l) => items.has(l.id));
@@ -95,24 +96,56 @@
 
   function render() {
     const cats = menu.categories.filter(catOpen);
+    const pop = (menu.popular || []).map(openByName).filter(Boolean);
     const test = menu.restaurant.test_mode ? '<p class="ro-test">Test mode. No real orders or charges.</p>' : '';
     const closed = accepting ? '' : `<p class="ro-closed">Online ordering isn't available right now. Please call ${esc(menu.restaurant.phone)}.</p>`;
     root.innerHTML = `${test}${closed}
       <div class="ro-bar">
-        <label>Pickup time
+        ${canDeliver() ? `<fieldset class="ro-mode"><legend>How would you like your order?</legend>${[['pickup', 'Pickup'], ['delivery', 'Delivery']].map(([v, t]) => `<label><input type="radio" name="ro-mode" value="${v}"${fulfillment === v ? ' checked' : ''}><span>${t}</span></label>`).join('')}</fieldset>` : ''}
+        <label>${fulfillment === 'delivery' ? 'Delivery time' : 'Pickup time'}
           <select id="ro-time">${slots.map((s) => `<option value="${s}"${s === pickup ? ' selected' : ''}>${esc(slotText(s))}</option>`).join('')}</select>
         </label>
       </div>
-      <nav class="ro-jump" aria-label="Menu categories">${cats.map((c) => `<a href="#ro-${c.id}">${esc(c.name)}</a>`).join('')}</nav>
+      ${deliveryMode === 'link' && menu.restaurant.doordash_store_url ? `<p class="ro-note"><a href="${esc(menu.restaurant.doordash_store_url)}" rel="noopener">Order delivery on DoorDash</a></p>` : ''}
+      <nav class="ro-jump" aria-label="Menu categories">${pop.length ? '<a href="#ro-popular">Popular</a>' : ''}${cats.map((c) => `<a href="#ro-${c.id}">${esc(c.name)}</a>`).join('')}</nav>
+      ${pop.length ? `<section class="ro-cat" id="ro-popular"><h2>Popular</h2><div class="ro-items">${pop.map(card).join('')}</div></section>` : ''}
       ${cats.map((c) => `<section class="ro-cat" id="ro-${c.id}"><h2>${esc(c.name)}</h2>
         ${c.note ? `<p class="ro-note">${esc(c.note)}</p>` : ''}${c.description ? `<p class="ro-note">${esc(c.description)}</p>` : ''}
         <div class="ro-items">${c.items.map(card).join('')}</div></section>`).join('')}
       <button class="ro-cartbtn" id="ro-open" type="button" hidden></button>`;
     root.querySelector('#ro-time').addEventListener('change', (e) => { pickup = e.target.value; render(); });
+    root.querySelectorAll('[name=ro-mode]').forEach((r) => r.addEventListener('change', () => setMode(r.value)));
     root.querySelector('#ro-open').addEventListener('click', openCart);
     root.querySelectorAll('[data-item]').forEach((b) => b.addEventListener('click', () => openItem(b.dataset.item)));
     updateCartButton();
     watchJump();
+  }
+
+  const canDeliver = () => ['drive', 'test'].includes(deliveryMode) && deliverySlots.length > 0;
+  function setMode(mode) {
+    fulfillment = mode;
+    slots = mode === 'delivery' ? deliverySlots : pickupSlotsList;
+    const at = new Date(pickup).getTime();
+    pickup = slots.find((s) => new Date(s).getTime() >= at) || slots[0] || null;
+    render();
+  }
+  // Lunch and dinner versions share a name, so find the one on the menu at this time.
+  function openByName(name) {
+    for (const c of menu.categories) {
+      if (!catOpen(c)) continue;
+      const hit = c.items.find((i) => i.name === name);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  const pairsFor = (i) => (i.pairs || []).map((id) => items.get(id)?.item).filter(Boolean).map((p) => openByName(p.name)).filter(Boolean);
+  const pairButton = (p) => `<button type="button" class="ro-pair" data-pair="${p.id}"><span>${esc(p.name)}</span><b>${fromPrice(p)}</b></button>`;
+  // Adds a dish with no required choices straight away, or opens it so the guest can choose.
+  function addPair(id, reopen) {
+    const { item } = items.get(id);
+    if (item.groups.some((g) => g.min > 0)) { close(); openItem(id); return; }
+    cart.push({ id, qty: 1, options: [], note: '' });
+    store.set(cart); updateCartButton(); reopen();
   }
 
   const card = (i) => `<button class="ro-item" type="button" data-item="${i.id}">
@@ -173,6 +206,8 @@
       walk(item.groups);
       return bad;
     };
+    const added = new Set();
+    const pairs = pairsFor(item);
     const tags = [item.gluten_free && 'Gluten free', item.vegetarian && 'Vegetarian', item.allergens.length && `Contains: ${item.allergens.join(', ')}`].filter(Boolean).join(' · ');
 
     const draw = () => {
@@ -182,10 +217,12 @@
         <h2>${esc(item.name)}</h2><p>${esc(item.description)}</p>${tags ? `<p class="ro-tags">${esc(tags)}</p>` : ''}
         ${item.groups.map(groupHtml).join('')}
         <label class="ro-field">Special instructions<textarea id="ro-note" rows="2" maxlength="200">${esc(noteText)}</textarea></label>
+        ${!old && pairs.some((p) => !added.has(p.id)) ? `<section class="ro-pairs"><h3>Pairs well with</h3>${pairs.filter((p) => !added.has(p.id)).map(pairButton).join('')}</section>` : ''}
         <p class="ro-err" role="alert"></p>
         <div class="ro-foot"><div class="ro-qty"><button type="button" data-q="-1" aria-label="Fewer">−</button><span>${qty}</span><button type="button" data-q="1" aria-label="More">+</button></div>
         <button class="ro-add" type="button">${old ? 'Update' : 'Add to cart'} · ${money(linePrice(item, picked) * qty)}</button></div></form>`;
       dialog.querySelector('.ro-x').onclick = close;
+      dialog.querySelectorAll('[data-pair]').forEach((b) => { b.onclick = () => { noteDraft(); addPair(b.dataset.pair, () => { added.add(b.dataset.pair); b.disabled = true; b.querySelector('b').textContent = 'Added'; }); }; });
       dialog.querySelectorAll('[data-q]').forEach((b) => { b.onclick = () => { noteDraft(); qty = Math.max(1, Math.min(50, qty + +b.dataset.q)); draw(); }; });
       dialog.querySelectorAll('fieldset input').forEach((inp) => {
         inp.onchange = () => {
@@ -219,6 +256,8 @@
     const draft = cartDraft;
     const sub = cartTotal();
     const pct = [0, 15, 18, 20];
+    const inCart = new Set(cart.map((l) => items.get(l.id).item.name));
+    const extras = [...new Map(cart.flatMap((l) => pairsFor(items.get(l.id).item)).filter((p) => !inCart.has(p.name)).map((p) => [p.name, p])).values()].slice(0, 3);
     dialog.innerHTML = `<div class="ro-sheet"><button class="ro-x" type="button" aria-label="Close">×</button><h2>Your order</h2>
       <ul class="ro-lines">${cart.map((l, n) => {
         const { item } = items.get(l.id);
@@ -227,12 +266,20 @@
           ${open ? '' : '<span class="ro-err">Not available at this pickup time</span>'}
           <button type="button" data-edit="${n}">Edit</button><button type="button" data-del="${n}">Remove</button></div><b>${money(linePrice(item, new Set(l.options)) * l.qty)}</b></li>`;
       }).join('')}</ul>
-      <p class="ro-when">Pickup: <strong>${esc(slotText(pickup))}</strong></p>
+      ${extras.length ? `<section class="ro-pairs"><h3>Add to your order</h3>${extras.map(pairButton).join('')}</section>` : ''}
+      <p class="ro-when">${fulfillment === 'delivery' ? 'Delivery' : 'Pickup'}: <strong>${esc(slotText(pickup))}</strong></p>
       <form id="ro-pay" novalidate>
         <div class="ro-two"><label class="ro-field">First name<input name="first_name" autocomplete="given-name" required value="${esc(draft.first_name)}"></label>
         <label class="ro-field">Last name<input name="last_name" autocomplete="family-name" required value="${esc(draft.last_name)}"></label></div>
         <label class="ro-field">Mobile phone<input name="phone" type="tel" autocomplete="tel" required value="${esc(draft.phone)}"></label>
         <label class="ro-field">Email for your receipt<input name="email" type="email" autocomplete="email" required value="${esc(draft.email)}"></label>
+        ${fulfillment === 'delivery' ? `<fieldset class="ro-address"><legend>Delivery address</legend>
+          <label class="ro-field">Street address<input name="street" autocomplete="address-line1" required value="${esc(draft.street)}"></label>
+          <label class="ro-field">Apartment or unit<input name="unit" autocomplete="address-line2" value="${esc(draft.unit)}"></label>
+          <div class="ro-two"><label class="ro-field">City<input name="city" autocomplete="address-level2" required value="${esc(draft.city)}"></label>
+          <label class="ro-field">ZIP code<input name="zip" autocomplete="postal-code" inputmode="numeric" maxlength="5" required value="${esc(draft.zip)}"></label></div>
+          <label class="ro-field">Driver instructions<input name="instructions" maxlength="200" value="${esc(draft.instructions)}"></label>
+          <button type="button" class="ro-apply" id="ro-fee">Get delivery fee</button></fieldset>` : ''}
         <label class="ro-field">Order note<input name="note" maxlength="300" value="${esc(draft.note)}"></label>
         <details class="ro-credits"${draft.gift_code || draft.rewards_code ? ' open' : ''}><summary>Gift card or rewards code</summary>
           <label class="ro-field">Gift card code<input name="gift_code" autocomplete="off" value="${esc(draft.gift_code)}"></label>
@@ -249,23 +296,27 @@
     dialog.querySelectorAll('[data-edit]').forEach((b) => { b.onclick = () => { keep(); close(); openItem(cart[+b.dataset.edit].id, +b.dataset.edit); }; });
     dialog.querySelectorAll('[data-tip]').forEach((b) => { b.onclick = () => { keep(); tipPct = +b.dataset.tip; tip = Math.round(cartTotal() * tipPct / 100); openCart(); }; });
     dialog.querySelector('#ro-apply').onclick = () => { keep(); refreshTotals(); };
+    dialog.querySelector('#ro-fee')?.addEventListener('click', () => { keep(); refreshTotals(); });
+    dialog.querySelectorAll('.ro-pairs [data-pair]').forEach((b) => { b.onclick = () => { keep(); addPair(b.dataset.pair, openCart); }; });
     dialog.querySelector('#ro-pay').addEventListener('submit', submit);
     if (!dialog.open) dialog.showModal();
     refreshTotals();
   }
-  let cartDraft = { first_name: '', last_name: '', phone: '', email: '', note: '', gift_code: '', rewards_code: '' };
+  let cartDraft = { first_name: '', last_name: '', phone: '', email: '', note: '', gift_code: '', rewards_code: '', street: '', unit: '', city: '', zip: '', instructions: '' };
+  const addressFrom = (val) => ({ street: val('street'), unit: val('unit'), city: val('city'), zip: val('zip'), instructions: val('instructions') });
 
   async function refreshTotals() {
     tip = Math.round(cartTotal() * tipPct / 100);
     const form = dialog.querySelector('#ro-pay');
     const val = (n) => form?.elements[n]?.value.trim() || undefined;
-    const r = await post({ action: 'quote', pickup_at: pickup, tip_cents: tip, items: cart, phone: val('phone'), gift_code: val('gift_code'), rewards_code: val('rewards_code') }).catch(() => null);
+    const haveAddress = fulfillment === 'delivery' && val('street') && val('city') && val('zip');
+    const r = await post({ action: 'quote', pickup_at: pickup, tip_cents: tip, items: cart, phone: val('phone'), gift_code: val('gift_code'), rewards_code: val('rewards_code'), ...(haveAddress ? { fulfillment, address: addressFrom(val) } : {}) }).catch(() => null);
     const box = dialog.querySelector('#ro-sum');
     if (!box) return;
     const msg = dialog.querySelector('#ro-pay .ro-err');
     if (!r?.ok) { msg.textContent = r?.error || 'Could not price your order.'; return; }
     msg.textContent = '';
-    box.innerHTML = `<dt>Subtotal</dt><dd>${money(r.subtotal_cents)}</dd>${r.discount_cents ? `<dt>Rewards</dt><dd>−${money(r.discount_cents)}</dd>` : ''}${r.guest_fee_cents ? `<dt>Service fee</dt><dd>${money(r.guest_fee_cents)}</dd>` : ''}
+    box.innerHTML = `<dt>Subtotal</dt><dd>${money(r.subtotal_cents)}</dd>${r.discount_cents ? `<dt>Rewards</dt><dd>−${money(r.discount_cents)}</dd>` : ''}${r.guest_fee_cents ? `<dt>Service fee</dt><dd>${money(r.guest_fee_cents)}</dd>` : ''}${r.delivery_fee_cents ? `<dt>Delivery</dt><dd>${money(r.delivery_fee_cents)}</dd>` : ''}
       <dt>Tax</dt><dd>${money(r.tax_cents)}</dd>${r.tip_cents ? `<dt>Tip</dt><dd>${money(r.tip_cents)}</dd>` : ''}<dt class="ro-total">Total</dt><dd class="ro-total">${money(r.total_cents)}</dd>${r.gift_applied_cents ? `<dt>Gift card</dt><dd>−${money(r.gift_applied_cents)}</dd><dt class="ro-total">Amount due</dt><dd class="ro-total">${money(r.amount_due_cents)}</dd>` : ''}`;
   }
 
@@ -276,7 +327,8 @@
     err.textContent = '';
     btn.disabled = true;
     const { gift_code, rewards_code } = guest;
-    const r = await post({ action: 'checkout', pickup_at: pickup, tip_cents: tip, items: cart, guest, gift_code, rewards_code, return_url: location.origin }).catch(() => null);
+    const val = (n) => String(guest[n] ?? '').trim();
+    const r = await post({ action: 'checkout', pickup_at: pickup, tip_cents: tip, items: cart, guest, gift_code, rewards_code, fulfillment, address: fulfillment === 'delivery' ? addressFrom(val) : undefined, return_url: location.origin }).catch(() => null);
     if (!r?.ok) { err.textContent = r?.error || 'Something went wrong. Please try again or call us.'; btn.disabled = false; return; }
     cart = []; store.set(cart);
     location.href = r.test ? `/order/?t=${r.token}` : r.redirect;

@@ -127,14 +127,15 @@ export function priceCart(menu, lines, pickupAt) {
   return out;
 }
 
-export function totals(lines, restaurant, tipCents = 0, discountCents = 0) {
+export function totals(lines, restaurant, tipCents = 0, discountCents = 0, deliveryCents = 0) {
   const subtotal = lines.reduce((s, l) => s + l.line_total_cents, 0);
   const tip = Math.max(0, Math.min(Math.round(Number(tipCents) || 0), 50000));
   const discount = Math.max(0, Math.min(Math.round(Number(discountCents) || 0), subtotal));
   const taxable = subtotal - discount;
   const guest_fee = Math.round(taxable * restaurant.guest_fee_bps / 10000);
   const tax = Math.round((taxable + guest_fee) * restaurant.tax_rate_bps / 10000);
-  return { subtotal_cents: subtotal, discount_cents: discount, guest_fee_cents: guest_fee, tax_cents: tax, tip_cents: tip, total_cents: taxable + guest_fee + tax + tip };
+  const delivery = Math.max(0, Math.round(Number(deliveryCents) || 0));
+  return { subtotal_cents: subtotal, discount_cents: discount, guest_fee_cents: guest_fee, tax_cents: tax, tip_cents: tip, delivery_fee_cents: delivery, total_cents: taxable + guest_fee + tax + tip + delivery };
 }
 
 /** How much of a total a gift card covers, and what is left to pay. */
@@ -167,6 +168,16 @@ export function validReservationDate(restaurant, date, now = new Date()) {
   const day = wanted.toLocaleDateString('en-US', { timeZone: 'UTC', weekday: 'short' }).toLowerCase().slice(0, 3);
   return (restaurant.hours?.[day] ?? []).length > 0;
 }
+
+/** A delivery address from checkout, ready to save and send to the courier. */
+export function cleanAddress(a) {
+  const clean = (s, n) => String(s ?? '').replace(/[<>]/g, '').trim().slice(0, n);
+  const street = clean(a?.street, 120), unit = clean(a?.unit, 30), city = clean(a?.city, 60), zip = clean(a?.zip, 10);
+  if (!street || !city) throw new OrderError('Please enter your street address and city.');
+  if (!/^\d{5}$/.test(zip)) throw new OrderError('Please enter a 5-digit ZIP code.');
+  return { street, unit, city, state: 'UT', zip, instructions: clean(a?.instructions, 200) };
+}
+export const addressLine = (a) => `${a.street}${a.unit ? ` ${a.unit}` : ''}, ${a.city}, ${a.state} ${a.zip}`;
 
 export function cleanGuest(g) {
   const clean = (s, n) => String(s ?? '').replace(/[<>]/g, '').trim().slice(0, n);
