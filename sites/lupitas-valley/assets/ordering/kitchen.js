@@ -10,7 +10,7 @@
     get() { try { return JSON.parse(localStorage.getItem(KEY)); } catch { return null; } },
     set(v) { try { v ? localStorage.setItem(KEY, JSON.stringify(v)) : localStorage.removeItem(KEY); } catch { /* signs in again next load */ } },
   };
-  let tab = 'orders', session = keep.get(), restaurant = null, seen = new Set(), first = true, timer, lastOk = Date.now(), audio;
+  let session = keep.get(), restaurant = null, seen = new Set(), first = true, timer, lastOk = Date.now(), audio;
 
   const beep = () => {
     try {
@@ -75,21 +75,15 @@
       if (w && Date.now() - lastOk > 30000) w.hidden = false;
     }
   }
-  const TABS = [['orders', 'Orders'], ['rewards', 'Rewards'], ['gift', 'Gift cards']];
-  const staff = (op, extra = {}) => act({ action: 'staff', restaurant: cfg.restaurant, op, ...extra });
   function shell(accepting) {
     root.innerHTML = `<header class="k-top"><h1>${esc(restaurant.name)}</h1><p class="k-offline" hidden>Connection lost. Retrying…</p>
       <button class="k-pause ${accepting ? '' : 'off'}">${accepting ? 'Taking orders · Pause' : 'PAUSED · Resume'}</button><button class="k-out">Sign out</button></header>
-      <nav class="k-tabs">${TABS.map(([k, t]) => `<button data-tab="${k}"${k === tab ? ' aria-current="page"' : ''}>${t}</button>`).join('')}</nav>
       <div id="k-view"></div>`;
     root.querySelector('.k-out').onclick = () => { session = null; keep.set(null); loginView(); };
     root.querySelector('.k-pause').onclick = async () => { await act({ action: 'pause', restaurant: cfg.restaurant, accepting: !accepting }); root.innerHTML = ''; tick(); };
-    root.querySelectorAll('[data-tab]').forEach((b) => { b.onclick = () => { tab = b.dataset.tab; root.innerHTML = ''; tick(); }; });
   }
-  function shellTab() { const wait = () => { if (root.querySelector('#k-view')) views[tab](); else setTimeout(wait, 100); }; wait(); }
   function draw(orders, accepting) {
-    if (!root.querySelector('#k-view')) { shell(accepting); if (tab !== 'orders') return shellTab(); }
-    if (tab !== 'orders') return;
+    if (!root.querySelector('#k-view')) shell(accepting);
     const col = (s, t) => `<section><h2>${t} (${orders.filter((o) => o.status === s).length})</h2>${orders.filter((o) => o.status === s).map((o) => card(o, restaurant.timezone)).join('')}</section>`;
     const view = root.querySelector('#k-view');
     view.innerHTML = `<div class="k-cols">${col('new', 'New')}${col('accepted', 'Cooking')}${col('ready', 'Ready')}</div>`;
@@ -108,45 +102,6 @@
       };
     });
   }
-  const view = () => root.querySelector('#k-view');
-  const row = (label, value) => (value ? `<p><strong>${esc(label)}:</strong> ${esc(value)}</p>` : '');
-  const views = {
-    rewards() {
-      view().innerHTML = `<div class="k-list"><form class="k-tool" id="k-rw"><label>Member phone<input name="phone" type="tel" required></label><button>Find</button></form><div id="k-rw-out"></div></div>`;
-      const out = view().querySelector('#k-rw-out');
-      const find = async (phone) => {
-        const r = await staff('rewards_find', { phone });
-        if (!r.ok) { out.innerHTML = `<p class="k-empty">${esc(r.error)}</p>`; return; }
-        const a = r.account;
-        out.innerHTML = `<article class="k-card k-ready"><header><strong>${esc(a.name)}</strong><span>${a.points} points</span></header>${row('Phone', a.phone)}${row('Rewards code', a.code)}
-          <div class="k-btns"><button data-use="${r.redeem_points}"${a.points < r.redeem_points ? ' disabled' : ''}>Use ${r.redeem_points} pts · ${money(r.redeem_cents)} off</button></div>
-          <form class="k-tool" id="k-rw-add"><label>Add points (manager)<input name="points" type="number" min="1" required></label><button>Add</button></form></article>`;
-        const change = async (points) => { const o = await staff('rewards_adjust', { id: a.id, points }); if (!o.ok) showError(o.error); find(phone); };
-        out.querySelector('[data-use]').onclick = () => change(-r.redeem_points);
-        out.querySelector('#k-rw-add').onsubmit = (e) => { e.preventDefault(); change(+e.target.points.value); };
-      };
-      view().querySelector('#k-rw').onsubmit = (e) => { e.preventDefault(); find(e.target.phone.value); };
-    },
-    gift() {
-      view().innerHTML = `<div class="k-list"><form class="k-tool" id="k-gc"><label>Gift card code<input name="code" autocomplete="off" required></label><button>Find</button></form><div id="k-gc-out"></div>
-        <form class="k-tool" id="k-gs"><label>Sell a card in store, amount in dollars (manager)<input name="amount" type="number" min="1" step="0.01" required></label><label>Buyer name<input name="name"></label><button>Create card</button></form><div id="k-gs-out"></div></div>`;
-      const out = view().querySelector('#k-gc-out');
-      const find = async (code) => {
-        const r = await staff('gift_find', { code });
-        if (!r.ok) { out.innerHTML = `<p class="k-empty">${esc(r.error)}</p>`; return; }
-        const c = r.card;
-        out.innerHTML = `<article class="k-card k-ready"><header><strong>${esc(c.code)}</strong><span>${money(c.balance_cents)} left</span></header>${row('Status', c.status)}
-          <form class="k-tool" id="k-gc-use"><label>Amount to take, in dollars<input name="amount" type="number" min="0.01" step="0.01" required></label><button>Take off card</button></form></article>`;
-        out.querySelector('#k-gc-use').onsubmit = async (e) => { e.preventDefault(); const o = await staff('gift_redeem', { id: c.id, cents: Math.round(+e.target.amount.value * 100) }); if (!o.ok) showError(o.error); find(code); };
-      };
-      view().querySelector('#k-gc').onsubmit = (e) => { e.preventDefault(); find(e.target.code.value); };
-      view().querySelector('#k-gs').onsubmit = async (e) => {
-        e.preventDefault();
-        const o = await staff('gift_issue', { cents: Math.round(+e.target.amount.value * 100), name: e.target.name.value });
-        view().querySelector('#k-gs-out').innerHTML = o.ok ? `<article class="k-card k-ready"><header><strong>${esc(o.code)}</strong><span>${money(o.balance_cents)}</span></header><p>Give this code to the guest.</p></article>` : `<p class="k-empty">${esc(o.error)}</p>`;
-      };
-    },
-  };
   const audioStart = () => { try { audio = audio || new (window.AudioContext || window.webkitAudioContext)(); audio.resume(); } catch { /* no sound */ } };
   function showError(msg) { const p = document.createElement('p'); p.className = 'k-toast'; p.textContent = msg; document.body.appendChild(p); setTimeout(() => p.remove(), 5000); }
   function askReason() {

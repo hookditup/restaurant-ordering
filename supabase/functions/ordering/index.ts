@@ -357,7 +357,7 @@ async function submitForm(req: Request, body: any) {
     if (!data.time || !data.party_size) throw new OrderError('Please pick a time and party size.');
     await insert('reservations', { restaurant_id: r.id, name: data.name, email, phone, res_date: data.date, res_time: text(data.time, 20), party_size: text(data.party_size, 20), requests: data.requests || null });
   }
-  await insert('form_submissions', { restaurant_id: r.id, kind, data });
+  if (kind !== 'reservation' && kind !== 'rewards') await insert('form_submissions', { restaurant_id: r.id, kind, data });
   const lines = Object.entries(data).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`).join('\n');
   await sendEmail(r.forms_email, `${r.name}: new ${kind.replace(/-/g, ' ')} form`, `${lines}\n\nSent from ${text(body.page, 100) || 'the website'}.`, null, validEmail(data.email ?? '') ? data.email : undefined);
   return res ?? json({ ok: true });

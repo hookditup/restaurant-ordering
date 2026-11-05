@@ -11,7 +11,7 @@
     set(v) { try { v ? localStorage.setItem(KEY, JSON.stringify(v)) : localStorage.removeItem(KEY); } catch { /* signs in again next load */ } },
   };
   let session = keep.get(), r = null, tab = 'dashboard', days = 30, menu = null;
-  const TABS = [['dashboard', 'Dashboard'], ['orders', 'Orders'], ['reservations', 'Reservations'], ['messages', 'Messages'], ['menu', 'Menu'], ['choices', 'Choices'], ['pairs', 'Popular and pairings'], ['settings', 'Settings']];
+  const TABS = [['dashboard', 'Dashboard'], ['orders', 'Orders'], ['reservations', 'Reservations'], ['messages', 'Messages'], ['rewards', 'Rewards'], ['gift', 'Gift cards'], ['menu', 'Menu'], ['choices', 'Choices'], ['pairs', 'Popular and pairings'], ['settings', 'Settings']];
 
   async function refresh() {
     const x = await fetch(`${AUTH}/token?grant_type=refresh_token`, { method: 'POST', headers: { apikey: cfg.key, 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh_token: session?.refresh_token }) });
@@ -119,8 +119,34 @@
     },
     async messages() {
       const { rows } = await staff('messages');
-      view().innerHTML = `<p class="a-help">Every website form lands here. Done clears it from this list. It doesn't reply to the guest.</p>${rows.map((m) => `<section class="a-box"><h2>${esc(m.kind.replace(/-/g, ' '))}</h2><p>${esc(new Date(m.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}</p>${Object.entries(m.data).filter(([k]) => k !== 'sms_consent' && m.data[k]).map(([k, v]) => `<p><strong>${esc(k.replace(/_/g, ' '))}:</strong> ${esc(v)}</p>`).join('')}<div class="a-btns"><button data-done="${m.id}" aria-label="Done with ${esc(m.kind.replace(/-/g, ' '))} from ${esc(m.data.name || 'guest')}">Done</button></div></section>`).join('') || '<p>No new messages.</p>'}`;
+      view().innerHTML = `<p class="a-help">Catering, careers, party and question forms land here. Done clears it from this list. It doesn't reply to the guest.</p>${rows.map((m) => `<section class="a-box"><h2>${esc(m.kind.replace(/-/g, ' '))}</h2><p>${esc(new Date(m.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}</p>${Object.entries(m.data).filter(([k]) => k !== 'sms_consent' && m.data[k]).map(([k, v]) => `<p><strong>${esc(k.replace(/_/g, ' '))}:</strong> ${esc(v)}</p>`).join('')}<div class="a-btns"><button data-done="${m.id}" aria-label="Done with ${esc(m.kind.replace(/-/g, ' '))} from ${esc(m.data.name || 'guest')}">Done</button></div></section>`).join('') || '<p>No new messages.</p>'}`;
       view().querySelectorAll('[data-done]').forEach((b) => { b.onclick = () => attempt(async () => { await staff('message', { id: b.dataset.done }); await views.messages(); await counts(); }); });
+    },
+    async rewards() {
+      view().innerHTML = `<form class="a-box" id="a-rw"><h2>Find a member</h2><label>Member phone <input name="phone" type="tel" required></label> <button>Find</button></form><div id="a-rw-out"></div>`;
+      const out = view().querySelector('#a-rw-out');
+      const find = async (phone) => {
+        const r = await staff('rewards_find', { phone }), a = r.account;
+        out.innerHTML = `<section class="a-box"><h2>${esc(a.name)}</h2><p>${esc(a.points)} points<br>Phone: ${esc(a.phone)}<br>Rewards code: ${esc(a.code)}</p>
+          <div class="a-btns"><button data-use${a.points < r.redeem_points ? ' disabled' : ''}>Use ${esc(r.redeem_points)} points for ${money(r.redeem_cents)} off</button></div>
+          <form id="a-rw-add"><label>Add points <input name="points" type="number" min="1" required></label> <button>Add</button></form></section>`;
+        const change = (points) => attempt(async () => { await staff('rewards_adjust', { id: a.id, points }); await find(phone); });
+        out.querySelector('[data-use]').onclick = () => change(-r.redeem_points);
+        out.querySelector('#a-rw-add').onsubmit = (e) => { e.preventDefault(); change(+e.target.points.value); };
+      };
+      view().querySelector('#a-rw').onsubmit = (e) => { e.preventDefault(); out.innerHTML = ''; attempt(() => find(e.target.phone.value), ''); };
+    },
+    async gift() {
+      view().innerHTML = `<form class="a-box" id="a-gc"><h2>Find a gift card</h2><label>Gift card code <input name="code" autocomplete="off" required></label> <button>Find</button></form><div id="a-gc-out"></div>
+        <form class="a-box" id="a-gs"><h2>Sell a card in store</h2><label>Amount in dollars <input name="amount" type="number" min="1" step="0.01" required></label> <label>Buyer name <input name="name"></label> <button>Create card</button></form><div id="a-gs-out"></div>`;
+      const out = view().querySelector('#a-gc-out');
+      const find = async (code) => {
+        const { card: c } = await staff('gift_find', { code });
+        out.innerHTML = `<section class="a-box"><h2>${esc(c.code)}</h2><p>${money(c.balance_cents)} left<br>Status: ${esc(c.status)}</p><form id="a-gc-use"><label>Amount to take, in dollars <input name="amount" type="number" min="0.01" step="0.01" required></label> <button>Take off card</button></form></section>`;
+        out.querySelector('#a-gc-use').onsubmit = (e) => { e.preventDefault(); attempt(async () => { await staff('gift_redeem', { id: c.id, cents: Math.round(+e.target.amount.value * 100) }); await find(code); }); };
+      };
+      view().querySelector('#a-gc').onsubmit = (e) => { e.preventDefault(); out.innerHTML = ''; attempt(() => find(e.target.code.value), ''); };
+      view().querySelector('#a-gs').onsubmit = (e) => { e.preventDefault(); attempt(async () => { const o = await staff('gift_issue', { cents: Math.round(+e.target.amount.value * 100), name: e.target.name.value }); view().querySelector('#a-gs-out').innerHTML = `<section class="a-box"><h2>${esc(o.code)}</h2><p>${money(o.balance_cents)}. Give this code to the guest.</p></section>`; }); };
     },
     async menu() {
       menu = await rpc('admin_menu', { p_restaurant: r.id });
