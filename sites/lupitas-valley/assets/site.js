@@ -100,7 +100,7 @@
     moveBtn('background video', function (b) { heroVideo.parentNode.appendChild(b); }, function (off) { if (off) heroVideo.pause(); else heroVideo.play(); }, ' hero-btn');
   }
 
-  // Auto-scrolling rows. Guests can swipe them. They stop on hover or focus, briefly after a touch, or with Pause.
+  // Auto-scrolling rows. Guests can swipe them. They stop on keyboard focus, briefly after a touch, or with Pause.
   document.querySelectorAll('[data-scroller]').forEach(function (box) {
     if (matchMedia('(prefers-reduced-motion: reduce)').matches || !window.requestAnimationFrame) return;
     var track = box.querySelector('.scroller-track'), items = [].slice.call(track.children);
@@ -116,7 +116,6 @@
     var user = false, over = false;
     moveBtn(box.getAttribute('aria-label'), function (b) { box.parentNode.insertBefore(b, box.nextSibling); }, function (off) { user = off; paused = user || over; });
     var stop = function () { over = true; paused = true; }, go = function () { over = false; paused = user; };
-    box.addEventListener('mouseenter', stop); box.addEventListener('mouseleave', go);
     box.addEventListener('focusin', stop); box.addEventListener('focusout', go);
     ['touchstart', 'touchmove', 'wheel'].forEach(function (ev) { box.addEventListener(ev, hold, { passive: true }); });
     if (window.IntersectionObserver) new IntersectionObserver(function (e) { seen = e[0].isIntersecting; }).observe(box);
