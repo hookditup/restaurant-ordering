@@ -24,10 +24,6 @@ const FROM = Deno.env.get('EMAIL_FROM') ?? '';
 const DD_DEV = Deno.env.get('DOORDASH_DEVELOPER_ID') ?? '';
 const DD_KEY = Deno.env.get('DOORDASH_KEY_ID') ?? '';
 const DD_SECRET = Deno.env.get('DOORDASH_SIGNING_SECRET') ?? '';
-const ATTR_URL = (Deno.env.get('ATTRIBUTION_URL') ?? '').replace(/\/$/, '');
-const ATTR_KEYS: Record<string, string> = (() => {
-  try { return JSON.parse(Deno.env.get('ATTRIBUTION_KEYS') ?? '{}') ?? {}; } catch { return {}; }
-})();
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -76,9 +72,31 @@ function cleanAttribution(raw: any, req: Request) {
   };
 }
 
+// Read on every call so new secrets apply without a redeploy. ATTRIBUTION_KEYS is normally JSON
+// ({"slug":"hra_..."}); a bare hra_ key is accepted for all restaurants. Stray characters from
+// copy-paste (byte-order mark, curly quotes, surrounding quotes or spaces) are cleaned up.
+function attrKeys(): Record<string, string> {
+  let raw = (Deno.env.get('ATTRIBUTION_KEYS') ?? '').replace(/^\uFEFF/, '').replace(/[\u201C\u201D]/g, '"').trim();
+  if (/^'.*'$/.test(raw)) raw = raw.slice(1, -1).trim();
+  if (!raw) return {};
+  try {
+    const v = JSON.parse(raw);
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [String(k).trim(), String(x).trim()]));
+    if (typeof v === 'string' && v.startsWith('hra_')) return { '*': v.trim() };
+  } catch { /* not JSON */ }
+  return raw.startsWith('hra_') ? { '*': raw } : {};
+}
+
 async function reportConversion(slug: string, conv: Record<string, unknown>, attr: any, orderId: string | null) {
-  const key = ATTR_KEYS[slug];
-  if (!ATTR_URL || !key) return;
+  const ATTR_URL = (Deno.env.get('ATTRIBUTION_URL') ?? '').trim().replace(/\/$/, '');
+  if (!ATTR_URL) return;
+  const keys = attrKeys();
+  const key = keys[slug] || keys['*'];
+  if (!key) {
+    // Names only, never key values, so a setup mistake is visible in order_events.
+    await log(orderId, 'attribution', 'skipped', { reason: 'no key for this restaurant', restaurant: slug, configured_for: Object.keys(keys) });
+    return;
+  }
   const a = attr ?? {};
   const body = {
     restaurant: slug, ...conv,
