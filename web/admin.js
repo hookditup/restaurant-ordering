@@ -1,4 +1,5 @@
-/* Owner admin. Page needs <main id="ro-admin"></main> and window.RO. Manager logins only. */
+/* Restaurant admin. Page needs <main id="ro-admin"></main> and window.RO.
+   Each login sees only the sections it has been given (Team tab). Agency logins can switch restaurants. */
 (function () {
   const cfg = window.RO, root = document.getElementById('ro-admin');
   if (!cfg || !root) return;
@@ -10,8 +11,11 @@
     get() { try { return JSON.parse(localStorage.getItem(KEY)); } catch { return null; } },
     set(v) { try { v ? localStorage.setItem(KEY, JSON.stringify(v)) : localStorage.removeItem(KEY); } catch { /* signs in again next load */ } },
   };
-  let session = keep.get(), r = null, tab = 'dashboard', days = 30, menu = null;
-  const TABS = [['dashboard', 'Dashboard'], ['orders', 'Orders'], ['reservations', 'Reservations'], ['messages', 'Messages'], ['rewards', 'Rewards'], ['gift', 'Gift cards'], ['menu', 'Menu'], ['choices', 'Choices'], ['pairs', 'Popular and pairings'], ['settings', 'Settings']];
+  let session = keep.get(), r = null, access = [], tab = 'dashboard', days = 30, menu = null;
+  const ALL_TABS = [['dashboard', 'Dashboard'], ['orders', 'Orders'], ['reservations', 'Reservations'], ['messages', 'Messages'], ['rewards', 'Rewards'], ['gift', 'Gift cards'], ['menu', 'Menu'], ['choices', 'Choices'], ['pairs', 'Popular and pairings'], ['marketing', 'Marketing'], ['settings', 'Settings'], ['team', 'Team'], ['account', 'My login']];
+  const SECTION_NAMES = { kitchen: 'Kitchen screen', dashboard: 'Dashboard', orders: 'Orders', reservations: 'Reservations', messages: 'Messages', rewards: 'Rewards', gift: 'Gift cards', menu: 'Menu', choices: 'Choices', pairs: 'Popular and pairings', settings: 'Settings', marketing: 'Marketing', team: 'Team' };
+  const tabs = () => ALL_TABS.filter(([k]) => k === 'account' || r.perms.includes(k));
+  const PICK = 'ro-admin-restaurant';
 
   async function refresh() {
     const x = await fetch(`${AUTH}/token?grant_type=refresh_token`, { method: 'POST', headers: { apikey: cfg.key, 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh_token: session?.refresh_token }) });
@@ -28,7 +32,7 @@
     return data;
   }
   const staff = async (op, extra = {}) => {
-    const go = () => fetch(`${cfg.url}/functions/v1/ordering`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` }, body: JSON.stringify({ action: 'staff', restaurant: cfg.restaurant, op, ...extra }) });
+    const go = () => fetch(`${cfg.url}/functions/v1/ordering`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` }, body: JSON.stringify({ action: 'staff', restaurant: r.slug, op, ...extra }) });
     let x = await go();
     if (x.status === 401 && await refresh()) x = await go();
     const d = await x.json();
@@ -40,7 +44,7 @@
   const attempt = async (fn, done = 'Saved.') => { try { await fn(); say(done); } catch (e) { if (e.message !== 'auth') say(e.message, true); } };
 
   function loginView(msg) {
-    root.innerHTML = `<form class="a-login"><h1>Owner sign in</h1><label>Email<input name="email" type="email" autocomplete="username" required></label>
+    root.innerHTML = `<form class="a-login"><h1>Admin sign in</h1><label>Email<input name="email" type="email" autocomplete="username" required></label>
       <label>Password<input name="password" type="password" autocomplete="current-password" required></label><p class="a-bad" role="alert">${esc(msg || '')}</p><button>Sign in</button></form>`;
     root.querySelector('form').onsubmit = async (e) => {
       e.preventDefault();
@@ -62,10 +66,14 @@
     b.setAttribute('aria-label', `${c.messages} new`);
   }
   function shell() {
-    root.innerHTML = `<header class="a-top"><h1>${esc(r.name)} admin</h1><a href="/kitchen/">Kitchen screen</a><button id="a-out">Sign out</button></header>
-      <nav class="a-tabs" aria-label="Admin sections">${TABS.map(([k, t]) => `<button data-tab="${k}"${k === tab ? ' aria-current="page"' : ''}>${t}${k === 'messages' ? '<span class="a-badge" hidden></span>' : ''}</button>`).join('')}</nav>
+    if (!tabs().some(([k]) => k === tab)) tab = tabs()[0][0];
+    const picker = access.length > 1 ? `<label class="a-pick">Restaurant <select id="a-pick">${access.map((x) => `<option value="${esc(x.slug)}"${x.slug === r.slug ? ' selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>` : '';
+    root.innerHTML = `<header class="a-top"><h1>${esc(r.name)} admin</h1>${picker}${r.perms.includes('kitchen') && r.slug === cfg.restaurant ? '<a href="/kitchen/">Kitchen screen</a>' : ''}<button id="a-out">Sign out</button></header>
+      <nav class="a-tabs" aria-label="Admin sections">${tabs().map(([k, t]) => `<button data-tab="${k}"${k === tab ? ' aria-current="page"' : ''}>${t}${k === 'messages' ? '<span class="a-badge" hidden></span>' : ''}</button>`).join('')}</nav>
       <p id="a-msg" class="a-msg" role="status"></p><div id="a-view"></div>`;
     root.querySelector('#a-out').onclick = () => { session = null; keep.set(null); loginView(); };
+    const pk = root.querySelector('#a-pick');
+    if (pk) pk.onchange = () => { r = access.find((x) => x.slug === pk.value); try { localStorage.setItem(PICK, r.slug); } catch { /* fine */ } shell(); };
     root.querySelectorAll('[data-tab]').forEach((b) => { b.onclick = () => { tab = b.dataset.tab; shell(); }; });
     counts();
     views[tab]().catch((e) => { if (e.message !== 'auth') say(e.message, true); });
@@ -186,7 +194,7 @@
       view().querySelectorAll('.a-opt').forEach((f) => { f.onsubmit = (e) => { e.preventDefault(); attempt(() => rpc('admin_save_option', { p_option: f.dataset.id, p: { price_cents: toCents(f.elements.price.value), available: !f.elements.soldout.checked } })); }; });
     },
     async pairs() {
-      const [m, ideas, slugged, live] = await Promise.all([rpc('admin_menu', { p_restaurant: r.id }), rpc('admin_pair_ideas', { p_restaurant: r.id }), call(`restaurants?select=popular_days,popular_min_orders,popular_count,pairs_auto,pairs_days,pairs_min_orders&id=eq.${r.id}`), rpc('get_menu', { p_slug: cfg.restaurant })]);
+      const [m, ideas, slugged, live] = await Promise.all([rpc('admin_menu', { p_restaurant: r.id }), rpc('admin_pair_ideas', { p_restaurant: r.id }), call(`restaurants?select=popular_days,popular_min_orders,popular_count,pairs_auto,pairs_days,pairs_min_orders&id=eq.${r.id}`), rpc('get_menu', { p_slug: r.slug })]);
       const names = new Map();
       m.categories.forEach((c) => c.items.forEach((i) => { if (!names.has(i.name)) names.set(i.name, i); }));
       const all = [...names.values()].sort((a, b) => a.name.localeCompare(b.name));
@@ -207,6 +215,77 @@
       view().querySelector('#a-pop').onsubmit = (e) => { e.preventDefault(); attempt(() => rpc('admin_save_settings', { p_restaurant: r.id, p: Object.fromEntries(new FormData(e.target).entries()) })); };
       view().querySelector('#a-auto').onsubmit = (e) => { e.preventDefault(); const f = e.target; attempt(async () => { await rpc('admin_save_pair_rules', { p_restaurant: r.id, p: { pairs_auto: f.elements.pairs_auto.checked, pairs_days: f.elements.pairs_days.value, pairs_min_orders: f.elements.pairs_min_orders.value } }); await views.pairs(); }); };
       view().querySelectorAll('.a-pair').forEach((f) => { f.onsubmit = (e) => { e.preventDefault(); attempt(() => rpc('admin_set_pairs', { p_item: f.dataset.id, p_pairs: [...f.querySelectorAll('select')].map((x) => x.value).filter(Boolean) })); }; });
+    },
+    async marketing() {
+      const d = await staff('mkt_report');
+      const t = d.report.totals, rows = d.report.campaigns || [], camps = d.campaigns || [];
+      const qr = (u) => `${d.qr_url}?data=${encodeURIComponent(u)}`;
+      const CH = [['facebook', 'Facebook post'], ['instagram', 'Instagram'], ['tiktok', 'TikTok'], ['meta_ads', 'Meta ads'], ['google_ads', 'Google ads'], ['email', 'Email'], ['sms', 'Text message'], ['billboard', 'Mobile billboard'], ['flyer', 'Flyer or mailer'], ['table_tent', 'Table tent or in-store QR'], ['other', 'Other']];
+      const links = camps.flatMap((c) => (c.short_links || []).map((l) => ({ ...l, c })));
+      const today = new Date().toLocaleDateString('en-CA');
+      view().innerHTML = `<p class="a-help">Sales and bookings tied to each ad, post, QR code or billboard. Treat these as a floor: some guests can't be tracked.</p>
+        <div class="a-stats">${stat('Revenue from marketing', money(t.revenue_cents), `<small>${t.conversions} tracked sales and bookings</small>`)}${stat('Ad spend', money(t.spend_cents), `<small>${t.spend_cents ? 'entered below' : 'none entered yet'}</small>`)}
+        ${stat('Return on ad spend', t.roas != null ? `${t.roas}×` : '—', `<small>${t.roas != null ? `${money(Math.round(t.roas * 100))} back per $1` : 'add spend to see this'}</small>`)}${stat('Not tied to a campaign', money(t.unattributed_revenue_cents), '<small>walk-ins, direct, untracked</small>')}</div>
+        <div class="a-scroll" tabindex="0" role="group" aria-label="Campaign results"><table class="a-table"><caption>By campaign</caption><thead><tr>${['Campaign', 'Clicks', 'Online', 'Phone', 'Bookings', 'Seated', 'Walk-in', 'Revenue', 'Spend', 'ROAS'].map((h) => `<th scope="col">${h}</th>`).join('')}</tr></thead><tbody>
+        ${rows.map((x) => `<tr><th scope="row">${esc(x.name)}<br><small>${esc(x.channel.replace(/_/g, ' '))}</small></th><td>${x.touches}</td><td>${x.online_orders}</td><td>${x.phone_orders}</td><td>${x.reservations}</td><td>${x.seated_checks}</td><td>${x.walk_in_redemptions}</td><td><strong>${money(x.revenue_cents)}</strong></td><td>${Number(x.spend_cents) ? money(x.spend_cents) : '—'}</td><td>${x.roas != null ? `${esc(x.roas)}×` : '—'}</td></tr>`).join('') || '<tr><td colspan="10">No campaigns yet. Make a tracked link below to start measuring.</td></tr>'}</tbody></table></div>
+        <div class="a-grid"><form class="a-box a-stack" id="a-link"><h2>New tracked link</h2>
+          <label>Campaign name<input name="name" required placeholder="Taco Tuesday, November Facebook post"></label>
+          <label>Where it's posted<select name="channel">${CH.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></label>
+          <label>Send people to<input name="dest" type="url" required value="${esc(location.origin)}/menu/"></label>
+          <label>Short name (optional)<input name="slug" autocapitalize="none" placeholder="fb-taco"></label>
+          <label>Promo code (optional)<input name="promo" autocapitalize="characters" placeholder="TACO10"></label>
+          <label>Tracking phone number (optional)<input name="phone" type="tel"></label>
+          <label class="a-check"><input type="checkbox" name="qr"> This link is for a printed QR code</label>
+          <button>Create link</button><p id="a-link-out" role="status"></p></form>
+        <form class="a-box a-stack" id="a-spend"><h2>Add ad spend</h2><p class="a-help">What a campaign cost (boost, ad budget, printing, billboard time). Saving the same day again replaces it.</p>
+          <label>Campaign<select name="c" required><option value="">Choose a campaign</option>${camps.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></label>
+          <label>Date<input name="date" type="date" value="${today}" required></label><label>Amount ($)<input name="amount" type="number" min="0" step="0.01" required></label>
+          <button${camps.length ? '' : ' disabled'}>Save spend</button></form></div>
+        <section class="a-box"><h2>Your tracked links</h2>${links.length ? `<ul class="a-links">${links.map((l) => `<li><a href="${esc(qr(l.short_url))}" target="_blank" rel="noopener"><img src="${esc(qr(l.short_url))}" alt="QR code for ${esc(l.c.name)}" width="64" height="64" loading="lazy"></a>
+          <div><strong>${esc(l.c.name)}</strong><br><small>${esc(l.short_url)}${l.c.promo_code ? ` · code ${esc(l.c.promo_code)}` : ''}${l.active ? '' : ' · paused'}</small></div><button class="a-alt" data-copy="${esc(l.short_url)}" aria-label="Copy link for ${esc(l.c.name)}">Copy</button></li>`).join('')}</ul>` : '<p>No links yet.</p>'}</section>`;
+      view().querySelector('#a-link').onsubmit = (e) => { e.preventDefault(); const f = e.target.elements; attempt(async () => {
+        const o = await staff('mkt_link', { destinationUrl: f.dest.value, slug: f.slug.value, isQr: f.qr.checked, campaign: { name: f.name.value, channel: f.channel.value, promoCode: f.promo.value, trackingPhone: f.phone.value } });
+        await views.marketing();
+        say(`Link created: ${o.shortUrl}`);
+      }, ''); };
+      view().querySelector('#a-spend').onsubmit = (e) => { e.preventDefault(); const f = e.target.elements; attempt(async () => { await staff('mkt_spend', { campaignId: f.c.value, date: f.date.value, amount: +f.amount.value }); await views.marketing(); }, 'Spend saved.'); };
+      view().querySelectorAll('[data-copy]').forEach((b) => { b.onclick = async () => { try { await navigator.clipboard.writeText(b.dataset.copy); b.textContent = 'Copied'; } catch { say('Copy blocked. Press and hold the link to copy it.', true); } }; });
+    },
+    async team() {
+      const d = await staff('team_list');
+      const ROLES = [['owner', 'Owner (everything, including Team)'], ['manager', 'Manager (everything except Team)'], ['kitchen', 'Kitchen screen only'], ['custom', 'Custom (pick sections)']];
+      const boxes = (have) => d.sections.map((p) => `<label class="a-check"><input type="checkbox" name="perm" value="${p}"${have.includes(p) ? ' checked' : ''}> ${esc(SECTION_NAMES[p])}</label>`).join('');
+      const form = (x) => `<form class="a-box a-stack a-person"${x ? ` data-uid="${x.user_id}"` : ''}><h2>${x ? esc(x.name || x.email) : 'Add a person'}${x?.you ? ' (you)' : ''}</h2>
+        ${x ? `<p class="a-help">${esc(x.email)} · ${x.last_sign_in_at ? `last signed in ${esc(new Date(x.last_sign_in_at).toLocaleDateString())}` : 'has not signed in yet'}</p><input type="hidden" name="email" value="${esc(x.email)}">` : '<label>Email<input name="email" type="email" required autocomplete="off"></label>'}
+        <label>Name<input name="name" value="${esc(x?.name || '')}"></label>
+        <label>Access<select name="role">${ROLES.map(([v, l]) => `<option value="${v}"${(x?.role || 'manager') === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+        <fieldset class="a-perms"${(x?.role || 'manager') === 'custom' ? '' : ' hidden'}><legend>Sections this person can use</legend>${boxes(x?.permissions || [])}</fieldset>
+        <div class="a-btns"><button>${x ? 'Save' : 'Add person'}</button>${x && !x.you ? `<button type="button" class="a-alt" data-remove="${x.user_id}">Remove</button>` : ''}</div></form>`;
+      view().innerHTML = `<p class="a-help">Choose what each person can see and change. New people get a temporary password to sign in with here and on the kitchen screen.</p>
+        ${r.agency ? '<p class="a-help">You have agency access to every restaurant, so you are not listed here.</p>' : ''}<div id="a-team-new"></div>${form(null)}${d.rows.map(form).join('')}`;
+      view().querySelectorAll('.a-person').forEach((f) => {
+        f.elements.role.onchange = () => { f.querySelector('.a-perms').hidden = f.elements.role.value !== 'custom'; };
+        f.onsubmit = (e) => { e.preventDefault(); attempt(async () => {
+          const o = await staff('team_save', { email: f.elements.email.value, name: f.elements.name.value, role: f.elements.role.value, permissions: [...f.querySelectorAll('[name=perm]:checked')].map((c) => c.value) });
+          await views.team();
+          if (o.temp_password) view().querySelector('#a-team-new').innerHTML = `<section class="a-box a-test"><h2>Login created for ${esc(o.email)}</h2><p>Temporary password: <code>${esc(o.temp_password)}</code></p><p>Send it to them privately. It won't be shown again. They can change it under My login.</p></section>`;
+        }); };
+        const rm = f.querySelector('[data-remove]');
+        if (rm) rm.onclick = () => { if (confirm('Remove this person from this restaurant?')) attempt(async () => { await staff('team_remove', { user_id: rm.dataset.remove }); await views.team(); }, 'Removed.'); };
+      });
+    },
+    async account() {
+      view().innerHTML = `<form class="a-box a-stack" id="a-pw"><h2>Change my password</h2><label>New password<input name="pw" type="password" minlength="10" autocomplete="new-password" required></label>
+        <label>Type it again<input name="pw2" type="password" minlength="10" autocomplete="new-password" required></label><button>Change password</button></form>`;
+      view().querySelector('#a-pw').onsubmit = (e) => { e.preventDefault(); const f = e.target.elements; attempt(async () => {
+        if (f.pw.value !== f.pw2.value) throw new Error("The two passwords don't match.");
+        const go = () => fetch(`${AUTH}/user`, { method: 'PUT', headers: { apikey: cfg.key, Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ password: f.pw.value }) });
+        let x = await go();
+        if (x.status === 401 && await refresh()) x = await go();
+        const d = await x.json().catch(() => ({}));
+        if (!x.ok) throw new Error(d.msg || d.message || 'That password was not accepted.');
+        e.target.reset();
+      }, 'Password changed.'); };
     },
     async settings() {
       const [s] = await call(`restaurants?select=*&id=eq.${r.id}`);
@@ -231,13 +310,14 @@
   async function start() {
     if (!session) return loginView();
     try {
-      [r] = await call(`restaurants?select=id,name,timezone&slug=eq.${encodeURIComponent(cfg.restaurant)}`);
-      if (!r) { session = null; keep.set(null); return loginView('This account is not set up for this restaurant.'); }
-      await rpc('admin_stats', { p_restaurant: r.id, p_days: 1 });
+      access = (await rpc('my_access', {})).filter((x) => x.perms.some((p) => p !== 'kitchen'));
     } catch (e) {
-      if (e.message !== 'auth') { session = null; keep.set(null); loginView('This page is for managers.'); }
+      if (e.message !== 'auth') { session = null; keep.set(null); loginView('Something went wrong. Please sign in again.'); }
       return;
     }
+    if (!access.length) { session = null; keep.set(null); return loginView('This login has no admin access. Ask the owner to add you on the Team tab.'); }
+    let saved = null; try { saved = localStorage.getItem(PICK); } catch { /* fine */ }
+    r = access.find((x) => x.slug === saved) || access.find((x) => x.slug === cfg.restaurant) || access[0];
     shell();
   }
   start();

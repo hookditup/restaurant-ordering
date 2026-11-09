@@ -286,9 +286,18 @@ async function staffFor(req: Request, restaurantId: string) {
   const u = await fetch(`${SB_URL}/auth/v1/user`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${token}` } });
   if (!u.ok) return null;
   const user = await u.json();
-  const rows = await db(`staff?select=name,role&user_id=eq.${user.id}&restaurant_id=eq.${restaurantId}`);
-  return rows?.[0] ? { id: user.id, email: user.email, name: rows[0].name || user.email, role: rows[0].role } : null;
+  const [admin] = await db(`platform_admins?select=user_id&user_id=eq.${user.id}`);
+  if (admin) return { id: user.id, email: user.email, name: user.email, role: 'agency', perms: ALL_PERMS, agency: true };
+  const rows = await db(`staff?select=name,role,permissions&user_id=eq.${user.id}&restaurant_id=eq.${restaurantId}`);
+  return rows?.[0] ? { id: user.id, email: user.email, name: rows[0].name || user.email, role: rows[0].role, perms: rows[0].permissions as string[], agency: false } : null;
 }
+// Admin sections a login can be given. 'team' lets someone add people and set their access.
+const ALL_PERMS = ['kitchen', 'dashboard', 'orders', 'reservations', 'messages', 'rewards', 'gift', 'menu', 'choices', 'pairs', 'settings', 'marketing', 'team'];
+const ROLE_PERMS: Record<string, string[]> = {
+  owner: ALL_PERMS,
+  manager: ALL_PERMS.filter((p) => p !== 'team'),
+  kitchen: ['kitchen'],
+};
 
 // ---------- actions ----------
 async function checkout(req: Request, body: any) {
@@ -506,13 +515,23 @@ async function staffTools(req: Request, body: any) {
   const r = await rid(body.restaurant, 'id,name,phone,site_url,rewards_redeem_points,rewards_redeem_cents,test_mode');
   const me = await staffFor(req, r.id);
   if (!me) return json({ ok: false, error: 'Please sign in again.' }, 401);
-  const manager = () => { if (me.role !== 'manager') throw new OrderError('Ask a manager to do this.'); };
+  const need = (perm: string) => { if (!me.perms.includes(perm)) throw new OrderError("Your login doesn't have access to this. Ask the owner."); };
+  const op = String(body.op ?? '');
+  const SECTION: Record<string, string> = {
+    reservations: 'reservations', reservation: 'reservations', messages: 'messages', message: 'messages',
+    rewards_find: 'rewards', rewards_adjust: 'rewards', gift_find: 'gift', gift_redeem: 'gift', gift_issue: 'gift',
+    team_list: 'team', team_save: 'team', team_remove: 'team',
+    mkt_report: 'marketing', mkt_campaigns: 'marketing', mkt_link: 'marketing', mkt_spend: 'marketing',
+  };
+  if (SECTION[op]) need(SECTION[op]);
+  if (op.startsWith('mkt_')) return await marketing(r, op, body);
+  if (op.startsWith('team_')) return await team(r, me, op, body);
   const id = encodeURIComponent(String(body.id ?? ''));
   const scope = `restaurant_id=eq.${r.id}`;
-  switch (String(body.op ?? '')) {
+  switch (op) {
     case 'counts': {
       const count = async (t: string, q: string) => (await db(`${t}?select=id&${scope}&${q}`)).length;
-      return json({ ok: true, reservations: await count('reservations', 'status=eq.requested'), messages: await count('form_submissions', 'status=eq.new') });
+      return json({ ok: true, reservations: me.perms.includes('reservations') ? await count('reservations', 'status=eq.requested') : 0, messages: me.perms.includes('messages') ? await count('form_submissions', 'status=eq.new') : 0 });
     }
     case 'reservations': {
       const today = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
@@ -543,7 +562,6 @@ async function staffTools(req: Request, body: any) {
     case 'rewards_adjust': {
       const delta = Math.round(Number(body.points));
       if (!Number.isInteger(delta) || !delta || Math.abs(delta) > 100000) throw new OrderError('Enter a number of points.');
-      if (delta > 0) manager();
       const [a] = await db(`rewards_accounts?select=id&id=eq.${id}&${scope}`);
       if (!a) throw new OrderError('Member not found.');
       const points = await rpc('rewards_change', { p_account: a.id, p_delta: delta, p_reason: delta > 0 ? 'added_by_staff' : 'redeemed_in_store', p_by: me.name });
@@ -564,7 +582,6 @@ async function staffTools(req: Request, body: any) {
       return json({ ok: true, balance_cents });
     }
     case 'gift_issue': {
-      manager();
       const cents = Math.round(Number(body.cents));
       if (!Number.isInteger(cents) || cents <= 0 || cents > 100000) throw new OrderError('Enter an amount.');
       const [card] = await insert('gift_cards', { restaurant_id: r.id, code: makeCode(16), initial_cents: cents, source: 'staff', buyer_name: text(body.name, 80) || me.name, test_mode: r.test_mode });
@@ -576,11 +593,94 @@ async function staffTools(req: Request, body: any) {
   }
 }
 
+// ---------- team access ----------
+// Anyone with 'team' access can add people, choose what they see, and remove them.
+// New logins get a one-time temporary password that the person adding them passes on.
+function tempPassword() {
+  const abc = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  const b = crypto.getRandomValues(new Uint8Array(14));
+  return [...b].map((x) => abc[x % abc.length]).join('');
+}
+async function team(r: any, me: any, op: string, body: any) {
+  const scope = `restaurant_id=eq.${r.id}`;
+  if (op === 'team_list') {
+    const rows = await db(`staff?select=user_id,name,role,permissions,created_at&${scope}&order=created_at.asc`);
+    const users = await Promise.all(rows.map(async (s: any) => {
+      const u = await fetch(`${SB_URL}/auth/v1/admin/users/${s.user_id}`, { headers: svc }).then((x) => x.json()).catch(() => ({}));
+      return { ...s, email: u.email ?? '', last_sign_in_at: u.last_sign_in_at ?? null, you: s.user_id === me.id };
+    }));
+    return json({ ok: true, rows: users, sections: ALL_PERMS, roles: ROLE_PERMS });
+  }
+  if (op === 'team_save') {
+    const email = text(body.email, 120).toLowerCase(), name = text(body.name, 80);
+    const role = ['owner', 'manager', 'kitchen', 'custom'].includes(body.role) ? body.role : 'custom';
+    const perms: string[] = role === 'custom' ? [...new Set<string>((Array.isArray(body.permissions) ? body.permissions : []).map(String))].filter((p) => ALL_PERMS.includes(p)) : ROLE_PERMS[role];
+    if (!validEmail(email)) throw new OrderError('Enter a valid email.');
+    if (!perms.length) throw new OrderError('Pick at least one section this person can use.');
+    let id = await rpc('auth_user_id', { p_email: email });
+    if (id === me.id && !perms.includes('team')) throw new OrderError("You can't remove your own team access.");
+    let password: string | null = null;
+    if (!id) {
+      password = tempPassword();
+      const made = await fetch(`${SB_URL}/auth/v1/admin/users`, { method: 'POST', headers: svc, body: JSON.stringify({ email, password, email_confirm: true }) });
+      const d = await made.json().catch(() => ({}));
+      if (!made.ok) throw new Error(`auth ${made.status}: ${d.msg ?? d.message ?? 'could not create login'}`);
+      id = d.id;
+    }
+    await db('staff?on_conflict=user_id,restaurant_id', {
+      method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({ user_id: id, restaurant_id: r.id, name: name || null, role, permissions: perms }),
+    });
+    await log(null, 'team', 'saved', { restaurant: r.id, user: id, role, permissions: perms, by: me.email });
+    return json({ ok: true, email, temp_password: password });
+  }
+  if (op === 'team_remove') {
+    const uid = String(body.user_id ?? '');
+    if (!/^[0-9a-f-]{36}$/.test(uid)) throw new OrderError('Person not found.');
+    if (uid === me.id) throw new OrderError("You can't remove yourself.");
+    await db(`staff?user_id=eq.${uid}&${scope}`, { method: 'DELETE' });
+    await log(null, 'team', 'removed', { restaurant: r.id, user: uid, by: me.email });
+    return json({ ok: true });
+  }
+  return json({ ok: false, error: 'Unknown action.' }, 400);
+}
+
+// ---------- marketing (attribution service) ----------
+// The admin's Marketing tab goes through here, so staff never handle the restaurant's API key.
+async function marketing(r: any, op: string, body: any) {
+  const ATTR_URL = (Deno.env.get('ATTRIBUTION_URL') ?? '').trim().replace(/\/$/, '');
+  const key = attrKeys()[r.slug] || attrKeys()['*'];
+  if (!ATTR_URL || !key) throw new OrderError('Marketing tracking is not set up for this restaurant yet.');
+  const call = async (path: string, init: RequestInit = {}) => {
+    const res = await fetch(`${ATTR_URL}${path}`, { ...init, headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(10000) });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) throw new OrderError(d.error ? `Marketing: ${d.error}` : 'Marketing data is not available right now.');
+    return d;
+  };
+  const q = `restaurant=${encodeURIComponent(r.slug)}`;
+  if (op === 'mkt_report') {
+    const [report, c] = await Promise.all([call(`/api/report?${q}`), call(`/api/campaigns?${q}`)]);
+    return json({ ok: true, report, campaigns: c.campaigns, qr_url: `${ATTR_URL}/api/qr` });
+  }
+  if (op === 'mkt_link') {
+    const c = body.campaign ?? {};
+    return json({ ok: true, ...(await call('/api/links', { method: 'POST', body: JSON.stringify({
+      restaurant: r.slug, slug: text(body.slug, 80) || undefined, destinationUrl: text(body.destinationUrl, 1000), isQr: body.isQr === true,
+      campaign: { name: text(c.name, 200), channel: text(c.channel, 50), promoCode: text(c.promoCode, 64) || undefined, trackingPhone: text(c.trackingPhone, 40) || undefined },
+    }) })) });
+  }
+  if (op === 'mkt_spend') {
+    return json({ ok: true, ...(await call('/api/spend', { method: 'POST', body: JSON.stringify({ restaurant: r.slug, campaignId: String(body.campaignId ?? ''), date: String(body.date ?? ''), amount: Number(body.amount) }) })) });
+  }
+  return json({ ok: false, error: 'Unknown action.' }, 400);
+}
+
 async function kitchen(req: Request, body: any) {
   const [o] = await db(`orders?select=*&id=eq.${encodeURIComponent(String(body.order_id ?? ''))}`);
   if (!o) return json({ ok: false, error: 'Order not found.' }, 404);
   const staff = await staffFor(req, o.restaurant_id);
   if (!staff) return json({ ok: false, error: 'Please sign in again.' }, 401);
+  if (!staff.perms.includes('kitchen')) return json({ ok: false, error: "Your login doesn't have kitchen access." }, 403);
   const to = { accept: 'accepted', ready: 'ready', complete: 'completed', cancel: 'cancelled' }[String(body.move)];
   if (!to || !(NEXT as any)[o.status]?.includes(to)) return json({ ok: false, error: `This order is already ${o.status}.` });
   const now = new Date().toISOString();
@@ -689,7 +789,9 @@ Deno.serve(async (req) => {
         return await staffTools(req, body);
       case 'pause': {
         const [r] = await db(`restaurants?select=id&slug=eq.${encodeURIComponent(String(body.restaurant ?? ''))}`);
-        if (!r || !(await staffFor(req, r.id))) return json({ ok: false, error: 'Please sign in again.' }, 401);
+        const who = r ? await staffFor(req, r.id) : null;
+        if (!who) return json({ ok: false, error: 'Please sign in again.' }, 401);
+        if (!who.perms.includes('kitchen')) return json({ ok: false, error: "Your login doesn't have kitchen access." }, 403);
         await patch('restaurants', `id=eq.${r.id}`, { accepting_orders: !!body.accepting });
         return json({ ok: true, accepting: !!body.accepting });
       }
