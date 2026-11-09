@@ -512,7 +512,7 @@ async function giftBuy(req: Request, body: any) {
 
 // ---------- staff tools ----------
 async function staffTools(req: Request, body: any) {
-  const r = await rid(body.restaurant, 'id,name,phone,site_url,rewards_redeem_points,rewards_redeem_cents,test_mode');
+  const r = await rid(body.restaurant, 'id,slug,name,phone,site_url,rewards_redeem_points,rewards_redeem_cents,test_mode');
   const me = await staffFor(req, r.id);
   if (!me) return json({ ok: false, error: 'Please sign in again.' }, 401);
   const need = (perm: string) => { if (!me.perms.includes(perm)) throw new OrderError("Your login doesn't have access to this. Ask the owner."); };
