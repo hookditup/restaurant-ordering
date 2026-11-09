@@ -57,6 +57,12 @@ A lunch and dinner version of a menu are two categories with different `hours`. 
 
 Restaurants start in test mode. With no `STRIPE_SECRET_KEY`, test orders are marked test-paid and no card is involved. A restaurant with `test_mode = false` refuses orders until Stripe is set up.
 
+## Marketing attribution
+
+The site loads a tracking script from the attribution service (`LV.trackUrl` in `assets/config.js`). Checkout, reservations and rewards sign-ups send its data along; the function saves it on the order or reservation (`attribution` column) and reports the sale to the service when payment is confirmed, plus cancellations, reservations and rewards sign-ups. Revenue reported is subtotal minus discounts.
+
+Set function secrets `ATTRIBUTION_URL` (e.g. `https://track-test.hookditup.com`) and `ATTRIBUTION_KEYS` (JSON, e.g. `{"lupitas-valley":"hra_..."}`). Without them nothing is reported and ordering works as before. Results appear in `order_events` with source `attribution`.
+
 ## Before going live
 
 1. Confirm the sales tax rate (`restaurants.tax_rate_bps`).

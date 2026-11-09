@@ -332,7 +332,7 @@
     btn.disabled = true;
     const { gift_code, rewards_code } = guest;
     const val = (n) => String(guest[n] ?? '').trim();
-    const r = await post({ action: 'checkout', pickup_at: pickup, tip_cents: tip, items: cart, guest, gift_code, rewards_code, fulfillment, address: fulfillment === 'delivery' ? addressFrom(val) : undefined, return_url: location.origin }).catch(() => null);
+    const r = await post({ action: 'checkout', pickup_at: pickup, tip_cents: tip, items: cart, guest, gift_code, rewards_code, fulfillment, address: fulfillment === 'delivery' ? addressFrom(val) : undefined, return_url: location.origin, attribution: window.HRA ? window.HRA.get() : undefined }).catch(() => null);
     if (!r?.ok) { err.textContent = r?.error || 'Something went wrong. Please try again or call us.'; btn.disabled = false; return; }
     cart = []; store.set(cart);
     location.href = r.test ? `/order/?t=${r.token}` : r.redirect;

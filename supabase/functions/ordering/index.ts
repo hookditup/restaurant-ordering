@@ -10,7 +10,8 @@
 //   staff      staff: reservations, messages, rewards and gift cards
 //   ?hook=stripe  Stripe webhook
 // Secrets: STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, RESEND_API_KEY, EMAIL_FROM,
-//   DOORDASH_DEVELOPER_ID, DOORDASH_KEY_ID, DOORDASH_SIGNING_SECRET (DoorDash Drive).
+//   DOORDASH_DEVELOPER_ID, DOORDASH_KEY_ID, DOORDASH_SIGNING_SECRET (DoorDash Drive),
+//   ATTRIBUTION_URL + ATTRIBUTION_KEYS (marketing attribution; JSON map of restaurant slug -> API key).
 // With no Stripe key, a restaurant in test mode marks orders as test-paid. Live mode never does.
 import { addressLine, applyGift, cleanAddress, cleanCode, cleanGuest, makeCode, NEXT, normPhone, OrderError, pickupSlots, priceCart, totals, validPickup, validReservationDate } from './core.js';
 
@@ -23,6 +24,10 @@ const FROM = Deno.env.get('EMAIL_FROM') ?? '';
 const DD_DEV = Deno.env.get('DOORDASH_DEVELOPER_ID') ?? '';
 const DD_KEY = Deno.env.get('DOORDASH_KEY_ID') ?? '';
 const DD_SECRET = Deno.env.get('DOORDASH_SIGNING_SECRET') ?? '';
+const ATTR_URL = (Deno.env.get('ATTRIBUTION_URL') ?? '').replace(/\/$/, '');
+const ATTR_KEYS: Record<string, string> = (() => {
+  try { return JSON.parse(Deno.env.get('ATTRIBUTION_KEYS') ?? '{}') ?? {}; } catch { return {}; }
+})();
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -46,6 +51,62 @@ const patch = (t: string, q: string, row: unknown) =>
   db(`${t}?${q}`, { method: 'PATCH', headers: { Prefer: 'return=representation' }, body: JSON.stringify(row) });
 const log = (order_id: string | null, source: string, event: string, data: unknown = {}) =>
   insert('order_events', { order_id, source, event, data }).catch(() => null);
+
+// ---------- marketing attribution ----------
+// The website's tracking script (window.HRA) sends where the guest came from. We keep it on the
+// order or reservation, then report the sale to the attribution service once it is final.
+// Reporting is best-effort: it never blocks or fails an order, and it is off until
+// ATTRIBUTION_URL and a key for the restaurant are set.
+function cleanAttribution(raw: any, req: Request) {
+  if (!raw || typeof raw !== 'object') return null;
+  const s = (v: unknown, n: number) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, n) : null);
+  const touch = (v: unknown) => {
+    if (!v || typeof v !== 'object') return null;
+    const out: Record<string, string> = {};
+    for (const [k, x] of Object.entries(v as Record<string, unknown>).slice(0, 20)) {
+      if (/^[a-z_]{1,20}$/.test(k) && typeof x === 'string' && x) out[k] = x.slice(0, 500);
+    }
+    return Object.keys(out).length ? out : null;
+  };
+  return {
+    visitorId: s(raw.visitorId, 64), firstTouch: touch(raw.firstTouch), lastTouch: touch(raw.lastTouch),
+    gaClientId: s(raw.gaClientId, 100), fbc: s(raw.fbc, 500), fbp: s(raw.fbp, 200),
+    clientIp: (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim() || null,
+    userAgent: s(req.headers.get('user-agent'), 500),
+  };
+}
+
+async function reportConversion(slug: string, conv: Record<string, unknown>, attr: any, orderId: string | null) {
+  const key = ATTR_KEYS[slug];
+  if (!ATTR_URL || !key) return;
+  const a = attr ?? {};
+  const body = {
+    restaurant: slug, ...conv,
+    visitorId: a.visitorId ?? undefined, firstTouch: a.firstTouch ?? undefined, lastTouch: a.lastTouch ?? undefined,
+    gaClientId: a.gaClientId ?? undefined, fbc: a.fbc ?? undefined, fbp: a.fbp ?? undefined,
+    clientIp: a.clientIp ?? undefined, userAgent: a.userAgent ?? undefined,
+  };
+  try {
+    const res = await fetch(`${ATTR_URL}/api/conversions`, {
+      method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body), signal: AbortSignal.timeout(5000),
+    });
+    const out = await res.json().catch(() => ({}));
+    await log(orderId, 'attribution', res.ok ? 'reported' : 'report_failed',
+      res.ok ? { type: conv.type, campaign: out.campaignId ?? null, method: out.attributionMethod ?? null } : { status: res.status, error: out.error ?? null });
+  } catch (e) {
+    await log(orderId, 'attribution', 'report_failed', { error: e instanceof Error ? e.message : String(e) });
+  }
+}
+
+// Revenue credited to marketing: food and drink after discounts (no tax, tip, or fees).
+const orderConversion = (o: any, status: string) => ({
+  type: 'online_order', externalId: o.id, orderId: o.id, status,
+  valueCents: Math.max(0, (o.subtotal_cents ?? 0) - (o.discount_cents ?? 0)),
+  occurredAt: o.paid_at ?? o.created_at,
+  customer: { phone: o.phone, email: o.email },
+  extra: { order_no: o.order_no, total_cents: o.total_cents, fulfillment: o.fulfillment, test_mode: o.test_mode },
+});
 
 const money = (c: number) => `$${(c / 100).toFixed(2)}`;
 const timeText = (iso: string, tz: string) =>
@@ -159,8 +220,9 @@ async function markPaid(o: any, payment_status: string, intent?: string) {
     status: 'new', payment_status, paid_at: new Date().toISOString(), stripe_payment_intent: intent ?? null,
   });
   if (!rows?.length) return;
-  const [r] = await db(`restaurants?select=name,timezone,alert_email,site_url&id=eq.${o.restaurant_id}`);
+  const [r] = await db(`restaurants?select=slug,name,timezone,alert_email,site_url&id=eq.${o.restaurant_id}`);
   await log(o.id, 'payment', payment_status);
+  await reportConversion(r.slug, orderConversion(rows[0], 'completed'), rows[0].attribution, o.id);
   await sendEmail(o.email, `${r.name} order ${o.order_no} received`,
     `Thanks ${o.first_name}! We got your order. ${o.fulfillment === 'delivery' ? 'Delivery' : 'Pickup'}: ${timeText(o.pickup_at, r.timezone)}.\nTotal: ${money(o.total_cents)}${o.gift_applied_cents ? ` (${money(o.gift_applied_cents)} paid by gift card)` : ''}\n\nTrack it: ${r.site_url}/order/?t=${o.token}`, o.id);
   await sendEmail(r.alert_email, `New online order ${o.order_no}`, `${o.first_name} ${o.last_name}, ${o.fulfillment === 'delivery' ? 'delivery' : 'pickup'} ${timeText(o.pickup_at, r.timezone)}, ${money(o.total_cents)}.`, o.id);
@@ -230,6 +292,7 @@ async function checkout(req: Request, body: any) {
   const [o] = await insert('orders', {
     restaurant_id: r.id, pickup_at: new Date(pickup_at).toISOString(), ...guest, ...t, gift_applied_cents: c.gift_applied_cents,
     amount_due_cents: c.amount_due_cents, test_mode: r.test_mode, fulfillment: delivering ? 'delivery' : 'pickup', delivery_address: address,
+    attribution: cleanAttribution(body.attribution, req),
   });
   await insert('order_items', lines.map((l) => ({ ...l, order_id: o.id })));
   await log(o.id, 'guest', 'placed', { ip });
@@ -346,8 +409,13 @@ async function submitForm(req: Request, body: any) {
     if (/^[a-z_]{1,30}$/.test(k)) data[k] = text(v, 2000);
   }
   let res: Response | null = null;
+  const attribution = cleanAttribution(body.attribution, req);
   if (kind === 'rewards') {
     res = await rewardsJoin(r, data);
+    const phone = normPhone(data.phone);
+    if (phone) await reportConversion(String(body.restaurant), {
+      type: 'vip_signup', externalId: `rewards-${phone}`, valueCents: 0, customer: { phone, email: data.email || undefined },
+    }, attribution, null);
   } else if (kind === 'reservation') {
     const phone = normPhone(data.phone), email = (data.email ?? '').toLowerCase();
     if (!data.name) throw new OrderError('Please enter your name.');
@@ -355,7 +423,11 @@ async function submitForm(req: Request, body: any) {
     if (!phone) throw new OrderError('Please enter a 10-digit phone number.');
     if (!validReservationDate(r, data.date)) throw new OrderError("We can't take a reservation on that date. Please pick a day we're open.");
     if (!data.time || !data.party_size) throw new OrderError('Please pick a time and party size.');
-    await insert('reservations', { restaurant_id: r.id, name: data.name, email, phone, res_date: data.date, res_time: text(data.time, 20), party_size: text(data.party_size, 20), requests: data.requests || null });
+    const [booking] = await insert('reservations', { restaurant_id: r.id, name: data.name, email, phone, res_date: data.date, res_time: text(data.time, 20), party_size: text(data.party_size, 20), requests: data.requests || null, attribution });
+    await reportConversion(String(body.restaurant), {
+      type: 'reservation', externalId: booking.id, reservationId: booking.id, valueCents: 0, customer: { phone, email },
+      extra: { res_date: data.date, res_time: text(data.time, 20), party_size: text(data.party_size, 20) },
+    }, attribution, null);
   }
   if (kind !== 'reservation' && kind !== 'rewards') await insert('form_submissions', { restaurant_id: r.id, kind, data });
   const lines = Object.entries(data).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`).join('\n');
@@ -517,6 +589,10 @@ async function kitchen(req: Request, body: any) {
   if (!rows?.length) return json({ ok: false, error: 'Someone else just updated this order.' });
   await log(o.id, 'kitchen', to, { by: staff.name });
   if (to === 'cancelled') await rpc('order_release_credits', { p_order: o.id });
+  if (to === 'cancelled' && o.paid_at) {
+    const [slugRow] = await db(`restaurants?select=slug&id=eq.${o.restaurant_id}`);
+    await reportConversion(slugRow.slug, orderConversion(o, up.payment_status === 'refunded' ? 'refunded' : 'cancelled'), o.attribution, o.id);
+  }
   if (to === 'completed') await log(o.id, 'rewards', 'earned', { points: await rpc('order_earn_points', { p_order: o.id }) });
   const [r] = await db(`restaurants?select=name,site_url,phone&id=eq.${o.restaurant_id}`);
   if (to === 'ready') await sendEmail(o.email, `Your ${r.name} order is ready`, `Hi ${o.first_name}, order ${o.order_no} is ready${o.fulfillment === 'delivery' ? ' and waiting for your driver' : ' for pickup'}.`, o.id);
