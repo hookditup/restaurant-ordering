@@ -84,7 +84,10 @@ function attrKeys(): Record<string, string> {
     if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [String(k).trim(), String(x).trim()]));
     if (typeof v === 'string' && v.startsWith('hra_')) return { '*': v.trim() };
   } catch { /* not JSON */ }
-  return raw.startsWith('hra_') ? { '*': raw } : {};
+  // Plain text: "slug: key" / "slug=key" lines, or a single bare key for every restaurant.
+  const pairs = raw.split(/[\n,]+/).map((l) => l.match(/^\s*\{?\s*\"?([a-z0-9-]+)\"?\s*[:=]\s*\"?([^\"\s}]+)\"?\s*\}?\s*$/i)).filter(Boolean) as RegExpMatchArray[];
+  if (pairs.length) return Object.fromEntries(pairs.map((m) => [m[1], m[2]]));
+  return /\s/.test(raw) ? {} : { '*': raw };
 }
 
 async function reportConversion(slug: string, conv: Record<string, unknown>, attr: any, orderId: string | null) {
@@ -94,7 +97,7 @@ async function reportConversion(slug: string, conv: Record<string, unknown>, att
   const key = keys[slug] || keys['*'];
   if (!key) {
     // Names only, never key values, so a setup mistake is visible in order_events.
-    await log(orderId, 'attribution', 'skipped', { reason: 'no key for this restaurant', restaurant: slug, configured_for: Object.keys(keys) });
+    await log(orderId, 'attribution', 'skipped', { reason: 'no key for this restaurant', restaurant: slug, configured_for: Object.keys(keys), secret_length: (Deno.env.get('ATTRIBUTION_KEYS') ?? '').length, starts_with_brace: (Deno.env.get('ATTRIBUTION_KEYS') ?? '').trim().startsWith('{') });
     return;
   }
   const a = attr ?? {};
