@@ -4,11 +4,11 @@
    orderUrl:     Online ordering link. While blank, every order button says "Call to order".
                  Once set, every order button says "Order online" and goes to this link.
    trackUrl:     Marketing attribution service. While blank, no tracking script loads.
-                 Testing: https://track-test.hookditup.com   Live: https://go.lupitasvalley.com */
+                 Testing: https://restaurant-attribution.vercel.app   Live: https://go.lupitasvalley.com */
 window.LV = {
   reviewUrl: '',
   orderUrl: '/menu',
-  trackUrl: 'https://track-test.hookditup.com'
+  trackUrl: 'https://restaurant-attribution.vercel.app'
 };
 
 /* Online ordering connection. The key is public by design; security rules live in the database. */

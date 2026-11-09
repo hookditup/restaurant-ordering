@@ -61,7 +61,7 @@ Restaurants start in test mode. With no `STRIPE_SECRET_KEY`, test orders are mar
 
 The site loads a tracking script from the attribution service (`LV.trackUrl` in `assets/config.js`). Checkout, reservations and rewards sign-ups send its data along; the function saves it on the order or reservation (`attribution` column) and reports the sale to the service when payment is confirmed, plus cancellations, reservations and rewards sign-ups. Revenue reported is subtotal minus discounts.
 
-Set function secrets `ATTRIBUTION_URL` (e.g. `https://track-test.hookditup.com`) and `ATTRIBUTION_KEYS` (JSON, e.g. `{"lupitas-valley":"hra_..."}`). Without them nothing is reported and ordering works as before. Results appear in `order_events` with source `attribution`.
+Set function secrets `ATTRIBUTION_URL` (e.g. `https://restaurant-attribution.vercel.app` while testing) and `ATTRIBUTION_KEYS` (JSON, e.g. `{"lupitas-valley":"hra_..."}`). Without them nothing is reported and ordering works as before. Results appear in `order_events` with source `attribution`.
 
 ## Before going live
 
