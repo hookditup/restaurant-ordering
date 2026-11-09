@@ -144,12 +144,14 @@
   }
   const pairsFor = (i) => (i.pairs || []).map((id) => items.get(id)?.item).filter(Boolean).map((p) => openByName(p.name)).filter(Boolean);
   const pairButton = (p) => `<button type="button" class="ro-pair" data-pair="${p.id}"><span>${esc(p.name)}</span><b>${fromPrice(p)}</b></button>`;
-  // Adds a dish with no required choices straight away, or opens it so the guest can choose.
-  function addPair(id, reopen) {
+  // Adds a dish with no required choices straight away. A dish that needs choices opens on top of
+  // the current screen; adding it or backing out returns the guest to where they were, with
+  // nothing they had picked lost.
+  function addPair(id, added, returnTo, returnLabel) {
     const { item } = items.get(id);
-    if (item.groups.some((g) => g.min > 0)) { close(); openItem(id); return; }
+    if (item.groups.some((g) => g.min > 0)) { openItem(id, null, returnTo, returnLabel); return; }
     cart.push({ id, qty: 1, options: [], note: '' });
-    store.set(cart); updateCartButton(); reopen();
+    store.set(cart); updateCartButton(); added();
   }
 
   const card = (i) => `<button class="ro-item" type="button" data-item="${i.id}">
@@ -169,8 +171,11 @@
   const dialog = document.createElement('dialog');
   dialog.className = 'ro-dialog';
   document.body.appendChild(dialog);
-  const close = () => dialog.close();
+  // When a pairing is open on top of a dish (or the cart), closing it goes back there instead.
+  let back = null;
+  const close = () => { if (back) { const b = back; back = null; b(false); } else dialog.close(); };
   dialog.addEventListener('click', (e) => { if (e.target === dialog) close(); });
+  dialog.addEventListener('cancel', (e) => { if (back) { e.preventDefault(); close(); } });
 
   const linePrice = (item, picked) => {
     let c = item.price_cents;
@@ -186,8 +191,9 @@
   };
   const cartTotal = () => cart.reduce((s, l) => { const hit = items.get(l.id); return s + (hit ? linePrice(hit.item, new Set(l.options)) * l.qty : 0); }, 0);
 
-  function openItem(id, editIndex) {
+  function openItem(id, editIndex, returnTo, returnLabel) {
     const { item } = items.get(id);
+    back = returnTo ?? null;
     const old = editIndex != null ? cart[editIndex] : null;
     const picked = new Set(old ? old.options : []);
     let qty = old ? old.qty : 1;
@@ -216,17 +222,27 @@
 
     const draw = () => {
       dialog.innerHTML = `<form method="dialog" class="ro-sheet">
-        <button class="ro-x" type="button" aria-label="Close">×</button>
+        <button class="ro-x" type="button" aria-label="${returnTo ? 'Back' : 'Close'}">×</button>
+        ${returnTo ? `<button class="ro-back" type="button">← Back to ${esc(returnLabel || 'your order')}</button>` : ''}
         ${item.image ? `<img class="ro-hero" src="${esc(item.image)}" alt="${esc(item.name)}">` : ''}
         <h2>${esc(item.name)}</h2><p>${esc(item.description)}</p>${tags ? `<p class="ro-tags">${esc(tags)}</p>` : ''}
         ${item.groups.map(groupHtml).join('')}
         <label class="ro-field">Special instructions<textarea id="ro-note" rows="2" maxlength="200">${esc(noteText)}</textarea></label>
-        ${!old && pairs.some((p) => !added.has(p.id)) ? `<section class="ro-pairs"><h3>Pairs well with</h3>${pairs.filter((p) => !added.has(p.id)).map(pairButton).join('')}</section>` : ''}
+        ${!old && !returnTo && pairs.length ? `<section class="ro-pairs"><h3>Pairs well with</h3>${pairs.map((p) => added.has(p.id) ? `<button type="button" class="ro-pair" disabled><span>${esc(p.name)}</span><b>Added</b></button>` : pairButton(p)).join('')}</section>` : ''}
         <p class="ro-err" role="alert"></p>
         <div class="ro-foot"><div class="ro-qty"><button type="button" data-q="-1" aria-label="Fewer">−</button><span>${qty}</span><button type="button" data-q="1" aria-label="More">+</button></div>
         <button class="ro-add" type="button">${old ? 'Update' : 'Add to cart'} · ${money(linePrice(item, picked) * qty)}</button></div></form>`;
       dialog.querySelector('.ro-x').onclick = close;
-      dialog.querySelectorAll('[data-pair]').forEach((b) => { b.onclick = () => { noteDraft(); addPair(b.dataset.pair, () => { added.add(b.dataset.pair); b.disabled = true; b.querySelector('b').textContent = 'Added'; }); }; });
+      dialog.querySelector('.ro-back')?.addEventListener('click', close);
+      dialog.querySelectorAll('[data-pair]').forEach((b) => {
+        b.onclick = () => {
+          noteDraft();
+          const pid = b.dataset.pair;
+          const markAdded = () => { added.add(pid); draw(); };
+          // Come back to this dish exactly as the guest left it.
+          addPair(pid, markAdded, (ok) => { back = returnTo ?? null; if (ok) added.add(pid); draw(); dialog.scrollTop = 0; if (!dialog.open) dialog.showModal(); }, item.name);
+        };
+      });
       dialog.querySelectorAll('[data-q]').forEach((b) => { b.onclick = () => { noteDraft(); qty = Math.max(1, Math.min(50, qty + +b.dataset.q)); draw(); }; });
       dialog.querySelectorAll('fieldset input').forEach((inp) => {
         inp.onchange = () => {
@@ -245,18 +261,22 @@
         if (bad.length) { dialog.querySelector('.ro-err').textContent = `Please choose: ${bad.join(', ')}`; return; }
         const line = { id, qty, options: [...picked], note: dialog.querySelector('#ro-note').value.trim() };
         if (old) cart[editIndex] = line; else cart.push(line);
-        store.set(cart); close(); updateCartButton();
+        store.set(cart); updateCartButton();
+        const b = back; back = null;
+        if (b) b(true); else dialog.close();
       };
     };
     let noteText = old?.note ?? '';
     const noteDraft = () => { const n = dialog.querySelector('#ro-note'); if (n) noteText = n.value; };
     draw();
-    dialog.showModal();
+    dialog.scrollTop = 0;
+    if (!dialog.open) dialog.showModal();
   }
   const findGroup = (gs, id) => { for (const g of gs) { if (g.id === id) return g; for (const o of g.options) { const f = findGroup(o.groups || [], id); if (f) return f; } } return null; };
 
   // ----- cart and checkout -----
   function openCart() {
+    back = null;
     const draft = cartDraft;
     const sub = cartTotal();
     const pct = [0, 15, 18, 20];
@@ -301,7 +321,7 @@
     dialog.querySelectorAll('[data-tip]').forEach((b) => { b.onclick = () => { keep(); tipPct = +b.dataset.tip; tip = Math.round(cartTotal() * tipPct / 100); openCart(); }; });
     dialog.querySelector('#ro-apply').onclick = () => { keep(); refreshTotals(); };
     dialog.querySelector('#ro-fee')?.addEventListener('click', () => { keep(); refreshTotals(); });
-    dialog.querySelectorAll('.ro-pairs [data-pair]').forEach((b) => { b.onclick = () => { keep(); addPair(b.dataset.pair, openCart); }; });
+    dialog.querySelectorAll('.ro-pairs [data-pair]').forEach((b) => { b.onclick = () => { keep(); addPair(b.dataset.pair, openCart, () => openCart(), 'your order'); }; });
     dialog.querySelector('#ro-pay').addEventListener('submit', submit);
     if (!dialog.open) dialog.showModal();
     refreshTotals();
