@@ -68,10 +68,12 @@
   function shell() {
     if (!tabs().some(([k]) => k === tab)) tab = tabs()[0][0];
     const picker = access.length > 1 ? `<label class="a-pick">Restaurant <select id="a-pick">${access.map((x) => `<option value="${esc(x.slug)}"${x.slug === r.slug ? ' selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>` : '';
-    root.innerHTML = `<header class="a-top"><h1>${esc(r.name)} admin</h1>${picker}${r.perms.includes('kitchen') && r.slug === cfg.restaurant ? '<a href="/kitchen/">Kitchen screen</a>' : ''}<button id="a-out">Sign out</button></header>
+    root.innerHTML = `<header class="a-top"><h1>${esc(r.name)} admin</h1><div class="a-acts">${picker}${r.perms.includes('kitchen') && r.slug === cfg.restaurant ? '<a href="/kitchen/">Kitchen screen</a>' : ''}<button id="a-out" class="a-alt">Sign out</button></div></header>
+      <label class="a-sec">Section <select id="a-sec">${tabs().map(([k, t]) => `<option value="${k}"${k === tab ? ' selected' : ''}>${t}</option>`).join('')}</select></label>
       <nav class="a-tabs" aria-label="Admin sections">${tabs().map(([k, t]) => `<button data-tab="${k}"${k === tab ? ' aria-current="page"' : ''}>${t}${k === 'messages' ? '<span class="a-badge" hidden></span>' : ''}</button>`).join('')}</nav>
       <p id="a-msg" class="a-msg" role="status"></p><div id="a-view"></div>`;
     root.querySelector('#a-out').onclick = () => { session = null; keep.set(null); loginView(); };
+    root.querySelector('#a-sec').onchange = (e) => { tab = e.target.value; shell(); };
     const pk = root.querySelector('#a-pick');
     if (pk) pk.onchange = () => { r = access.find((x) => x.slug === pk.value); try { localStorage.setItem(PICK, r.slug); } catch { /* fine */ } shell(); };
     root.querySelectorAll('[data-tab]').forEach((b) => { b.onclick = () => { tab = b.dataset.tab; shell(); }; });
@@ -226,8 +228,10 @@
       view().innerHTML = `<p class="a-help">Sales and bookings tied to each ad, post, QR code or billboard. Treat these as a floor: some guests can't be tracked.</p>
         <div class="a-stats">${stat('Revenue from marketing', money(t.revenue_cents), `<small>${t.conversions} tracked sales and bookings</small>`)}${stat('Ad spend', money(t.spend_cents), `<small>${t.spend_cents ? 'entered below' : 'none entered yet'}</small>`)}
         ${stat('Return on ad spend', t.roas != null ? `${t.roas}×` : '—', `<small>${t.roas != null ? `${money(Math.round(t.roas * 100))} back per $1` : 'add spend to see this'}</small>`)}${stat('Not tied to a campaign', money(t.unattributed_revenue_cents), '<small>walk-ins, direct, untracked</small>')}</div>
-        <div class="a-scroll" tabindex="0" role="group" aria-label="Campaign results"><table class="a-table"><caption>By campaign</caption><thead><tr>${['Campaign', 'Clicks', 'Online', 'Phone', 'Bookings', 'Seated', 'Walk-in', 'Revenue', 'Spend', 'ROAS'].map((h) => `<th scope="col">${h}</th>`).join('')}</tr></thead><tbody>
+        <div class="a-scroll a-desk" tabindex="0" role="group" aria-label="Campaign results"><table class="a-table"><caption>By campaign</caption><thead><tr>${['Campaign', 'Clicks', 'Online', 'Phone', 'Bookings', 'Seated', 'Walk-in', 'Revenue', 'Spend', 'ROAS'].map((h) => `<th scope="col">${h}</th>`).join('')}</tr></thead><tbody>
         ${rows.map((x) => `<tr><th scope="row">${esc(x.name)}<br><small>${esc(x.channel.replace(/_/g, ' '))}</small></th><td>${x.touches}</td><td>${x.online_orders}</td><td>${x.phone_orders}</td><td>${x.reservations}</td><td>${x.seated_checks}</td><td>${x.walk_in_redemptions}</td><td><strong>${money(x.revenue_cents)}</strong></td><td>${Number(x.spend_cents) ? money(x.spend_cents) : '—'}</td><td>${x.roas != null ? `${esc(x.roas)}×` : '—'}</td></tr>`).join('') || '<tr><td colspan="10">No campaigns yet. Make a tracked link below to start measuring.</td></tr>'}</tbody></table></div>
+        <section class="a-box a-mcards"><h2>By campaign</h2>${rows.map((x) => `<div class="a-mc"><div class="a-mc-head"><strong>${esc(x.name)}</strong><strong>${money(x.revenue_cents)}</strong></div>
+          <small>${esc(x.channel.replace(/_/g, ' '))}${x.roas != null ? ` · ${esc(x.roas)}× return` : ''}</small><p>${[[x.touches, 'clicks'], [x.online_orders, 'online'], [x.phone_orders, 'phone'], [x.reservations, 'bookings'], [x.seated_checks, 'seated'], [x.walk_in_redemptions, 'walk-in']].filter(([n]) => Number(n) > 0).map(([n, l]) => `${n} ${l}`).join(' · ') || 'No activity yet'}${Number(x.spend_cents) ? ` · ${money(x.spend_cents)} spent` : ''}</p></div>`).join('') || '<p>No campaigns yet. Make a tracked link below to start measuring.</p>'}</section>
         <div class="a-grid"><form class="a-box a-stack" id="a-link"><h2>New tracked link</h2>
           <label>Campaign name<input name="name" required placeholder="Taco Tuesday, November Facebook post"></label>
           <label>Where it's posted<select name="channel">${CH.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></label>
@@ -255,11 +259,12 @@
       const d = await staff('team_list');
       const ROLES = [['owner', 'Owner (everything, including Team)'], ['manager', 'Manager (everything except Team)'], ['kitchen', 'Kitchen screen only'], ['custom', 'Custom (pick sections)']];
       const boxes = (have) => d.sections.map((p) => `<label class="a-check"><input type="checkbox" name="perm" value="${p}"${have.includes(p) ? ' checked' : ''}> ${esc(SECTION_NAMES[p])}</label>`).join('');
+      const roleOf = (x) => { if (!x) return 'manager'; const same = (a, b) => a.length === b.length && a.every((p) => b.includes(p)); return Object.entries(d.roles).find(([, ps]) => same(ps, x.permissions))?.[0] || 'custom'; };
       const form = (x) => `<form class="a-box a-stack a-person"${x ? ` data-uid="${x.user_id}"` : ''}><h2>${x ? esc(x.name || x.email) : 'Add a person'}${x?.you ? ' (you)' : ''}</h2>
         ${x ? `<p class="a-help">${esc(x.email)} · ${x.last_sign_in_at ? `last signed in ${esc(new Date(x.last_sign_in_at).toLocaleDateString())}` : 'has not signed in yet'}</p><input type="hidden" name="email" value="${esc(x.email)}">` : '<label>Email<input name="email" type="email" required autocomplete="off"></label>'}
         <label>Name<input name="name" value="${esc(x?.name || '')}"></label>
-        <label>Access<select name="role">${ROLES.map(([v, l]) => `<option value="${v}"${(x?.role || 'manager') === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
-        <fieldset class="a-perms"${(x?.role || 'manager') === 'custom' ? '' : ' hidden'}><legend>Sections this person can use</legend>${boxes(x?.permissions || [])}</fieldset>
+        <label>Access<select name="role">${ROLES.map(([v, l]) => `<option value="${v}"${roleOf(x) === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+        <fieldset class="a-perms"${roleOf(x) === 'custom' ? '' : ' hidden'}><legend>Sections this person can use</legend>${boxes(x?.permissions || [])}</fieldset>
         <div class="a-btns"><button>${x ? 'Save' : 'Add person'}</button>${x && !x.you ? `<button type="button" class="a-alt" data-remove="${x.user_id}">Remove</button>` : ''}</div></form>`;
       view().innerHTML = `<p class="a-help">Choose what each person can see and change. New people get a temporary password to sign in with here and on the kitchen screen.</p>
         ${r.agency ? '<p class="a-help">You have agency access to every restaurant, so you are not listed here.</p>' : ''}<div id="a-team-new"></div>${form(null)}${d.rows.map(form).join('')}`;
