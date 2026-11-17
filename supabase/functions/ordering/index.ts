@@ -10,7 +10,8 @@
 //   staff      staff: reservations, messages, rewards and gift cards
 //   ?hook=stripe  Stripe webhook
 // Secrets: STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, RESEND_API_KEY, EMAIL_FROM,
-//   DOORDASH_DEVELOPER_ID, DOORDASH_KEY_ID, DOORDASH_SIGNING_SECRET (DoorDash Drive).
+//   DOORDASH_DEVELOPER_ID, DOORDASH_KEY_ID, DOORDASH_SIGNING_SECRET (DoorDash Drive),
+//   ATTRIBUTION_URL + ATTRIBUTION_KEYS (marketing attribution; JSON map of restaurant slug -> API key).
 // With no Stripe key, a restaurant in test mode marks orders as test-paid. Live mode never does.
 import { addressLine, applyGift, cleanAddress, cleanCode, cleanGuest, makeCode, NEXT, normPhone, OrderError, pickupSlots, priceCart, totals, validPickup, validReservationDate } from './core.js';
 
@@ -46,6 +47,87 @@ const patch = (t: string, q: string, row: unknown) =>
   db(`${t}?${q}`, { method: 'PATCH', headers: { Prefer: 'return=representation' }, body: JSON.stringify(row) });
 const log = (order_id: string | null, source: string, event: string, data: unknown = {}) =>
   insert('order_events', { order_id, source, event, data }).catch(() => null);
+
+// ---------- marketing attribution ----------
+// The website's tracking script (window.HRA) sends where the guest came from. We keep it on the
+// order or reservation, then report the sale to the attribution service once it is final.
+// Reporting is best-effort: it never blocks or fails an order, and it is off until
+// ATTRIBUTION_URL and a key for the restaurant are set.
+function cleanAttribution(raw: any, req: Request) {
+  if (!raw || typeof raw !== 'object') return null;
+  const s = (v: unknown, n: number) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, n) : null);
+  const touch = (v: unknown) => {
+    if (!v || typeof v !== 'object') return null;
+    const out: Record<string, string> = {};
+    for (const [k, x] of Object.entries(v as Record<string, unknown>).slice(0, 20)) {
+      if (/^[a-z_]{1,20}$/.test(k) && typeof x === 'string' && x) out[k] = x.slice(0, 500);
+    }
+    return Object.keys(out).length ? out : null;
+  };
+  return {
+    visitorId: s(raw.visitorId, 64), firstTouch: touch(raw.firstTouch), lastTouch: touch(raw.lastTouch),
+    gaClientId: s(raw.gaClientId, 100), fbc: s(raw.fbc, 500), fbp: s(raw.fbp, 200),
+    clientIp: (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim() || null,
+    userAgent: s(req.headers.get('user-agent'), 500),
+  };
+}
+
+// Read on every call so new secrets apply without a redeploy. ATTRIBUTION_KEYS is normally JSON
+// ({"slug":"hra_..."}); a bare hra_ key is accepted for all restaurants. Stray characters from
+// copy-paste (byte-order mark, curly quotes, surrounding quotes or spaces) are cleaned up.
+function attrKeys(): Record<string, string> {
+  let raw = (Deno.env.get('ATTRIBUTION_KEYS') ?? '').replace(/^\uFEFF/, '').replace(/[\u201C\u201D]/g, '"').trim();
+  if (/^'.*'$/.test(raw)) raw = raw.slice(1, -1).trim();
+  if (!raw) return {};
+  try {
+    const v = JSON.parse(raw);
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [String(k).trim(), String(x).trim()]));
+    if (typeof v === 'string' && v.startsWith('hra_')) return { '*': v.trim() };
+  } catch { /* not JSON */ }
+  // Plain text: "slug: key" / "slug=key" lines, or a single bare key for every restaurant.
+  const pairs = raw.split(/[\n,]+/).map((l) => l.match(/^\s*\{?\s*\"?([a-z0-9-]+)\"?\s*[:=]\s*\"?([^\"\s}]+)\"?\s*\}?\s*$/i)).filter(Boolean) as RegExpMatchArray[];
+  if (pairs.length) return Object.fromEntries(pairs.map((m) => [m[1], m[2]]));
+  return /\s/.test(raw) ? {} : { '*': raw };
+}
+
+async function reportConversion(slug: string, conv: Record<string, unknown>, attr: any, orderId: string | null) {
+  const ATTR_URL = (Deno.env.get('ATTRIBUTION_URL') ?? '').trim().replace(/\/$/, '');
+  if (!ATTR_URL) return;
+  const keys = attrKeys();
+  const key = keys[slug] || keys['*'];
+  if (!key) {
+    // Names only, never key values, so a setup mistake is visible in order_events.
+    await log(orderId, 'attribution', 'skipped', { reason: 'no key for this restaurant', restaurant: slug, configured_for: Object.keys(keys), secret_length: (Deno.env.get('ATTRIBUTION_KEYS') ?? '').length, starts_with_brace: (Deno.env.get('ATTRIBUTION_KEYS') ?? '').trim().startsWith('{') });
+    return;
+  }
+  const a = attr ?? {};
+  const body = {
+    restaurant: slug, ...conv,
+    visitorId: a.visitorId ?? undefined, firstTouch: a.firstTouch ?? undefined, lastTouch: a.lastTouch ?? undefined,
+    gaClientId: a.gaClientId ?? undefined, fbc: a.fbc ?? undefined, fbp: a.fbp ?? undefined,
+    clientIp: a.clientIp ?? undefined, userAgent: a.userAgent ?? undefined,
+  };
+  try {
+    const res = await fetch(`${ATTR_URL}/api/conversions`, {
+      method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body), signal: AbortSignal.timeout(5000),
+    });
+    const out = await res.json().catch(() => ({}));
+    await log(orderId, 'attribution', res.ok ? 'reported' : 'report_failed',
+      res.ok ? { type: conv.type, campaign: out.campaignId ?? null, method: out.attributionMethod ?? null } : { status: res.status, error: out.error ?? null });
+  } catch (e) {
+    await log(orderId, 'attribution', 'report_failed', { error: e instanceof Error ? e.message : String(e) });
+  }
+}
+
+// Revenue credited to marketing: food and drink after discounts (no tax, tip, or fees).
+const orderConversion = (o: any, status: string) => ({
+  type: 'online_order', externalId: o.id, orderId: o.id, status,
+  valueCents: Math.max(0, (o.subtotal_cents ?? 0) - (o.discount_cents ?? 0)),
+  occurredAt: o.paid_at ?? o.created_at,
+  customer: { phone: o.phone, email: o.email },
+  extra: { order_no: o.order_no, total_cents: o.total_cents, fulfillment: o.fulfillment, test_mode: o.test_mode },
+});
 
 const money = (c: number) => `$${(c / 100).toFixed(2)}`;
 const timeText = (iso: string, tz: string) =>
@@ -159,8 +241,9 @@ async function markPaid(o: any, payment_status: string, intent?: string) {
     status: 'new', payment_status, paid_at: new Date().toISOString(), stripe_payment_intent: intent ?? null,
   });
   if (!rows?.length) return;
-  const [r] = await db(`restaurants?select=name,timezone,alert_email,site_url&id=eq.${o.restaurant_id}`);
+  const [r] = await db(`restaurants?select=slug,name,timezone,alert_email,site_url&id=eq.${o.restaurant_id}`);
   await log(o.id, 'payment', payment_status);
+  await reportConversion(r.slug, orderConversion(rows[0], 'completed'), rows[0].attribution, o.id);
   await sendEmail(o.email, `${r.name} order ${o.order_no} received`,
     `Thanks ${o.first_name}! We got your order. ${o.fulfillment === 'delivery' ? 'Delivery' : 'Pickup'}: ${timeText(o.pickup_at, r.timezone)}.\nTotal: ${money(o.total_cents)}${o.gift_applied_cents ? ` (${money(o.gift_applied_cents)} paid by gift card)` : ''}\n\nTrack it: ${r.site_url}/order/?t=${o.token}`, o.id);
   await sendEmail(r.alert_email, `New online order ${o.order_no}`, `${o.first_name} ${o.last_name}, ${o.fulfillment === 'delivery' ? 'delivery' : 'pickup'} ${timeText(o.pickup_at, r.timezone)}, ${money(o.total_cents)}.`, o.id);
@@ -203,9 +286,18 @@ async function staffFor(req: Request, restaurantId: string) {
   const u = await fetch(`${SB_URL}/auth/v1/user`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${token}` } });
   if (!u.ok) return null;
   const user = await u.json();
-  const rows = await db(`staff?select=name,role&user_id=eq.${user.id}&restaurant_id=eq.${restaurantId}`);
-  return rows?.[0] ? { id: user.id, email: user.email, name: rows[0].name || user.email, role: rows[0].role } : null;
+  const [admin] = await db(`platform_admins?select=user_id&user_id=eq.${user.id}`);
+  if (admin) return { id: user.id, email: user.email, name: user.email, role: 'agency', perms: ALL_PERMS, agency: true };
+  const rows = await db(`staff?select=name,role,permissions&user_id=eq.${user.id}&restaurant_id=eq.${restaurantId}`);
+  return rows?.[0] ? { id: user.id, email: user.email, name: rows[0].name || user.email, role: rows[0].role, perms: rows[0].permissions as string[], agency: false } : null;
 }
+// Admin sections a login can be given. 'team' lets someone add people and set their access.
+const ALL_PERMS = ['kitchen', 'dashboard', 'orders', 'reservations', 'messages', 'rewards', 'gift', 'menu', 'choices', 'pairs', 'settings', 'marketing', 'team'];
+const ROLE_PERMS: Record<string, string[]> = {
+  owner: ALL_PERMS,
+  manager: ALL_PERMS.filter((p) => p !== 'team'),
+  kitchen: ['kitchen'],
+};
 
 // ---------- actions ----------
 async function checkout(req: Request, body: any) {
@@ -230,6 +322,7 @@ async function checkout(req: Request, body: any) {
   const [o] = await insert('orders', {
     restaurant_id: r.id, pickup_at: new Date(pickup_at).toISOString(), ...guest, ...t, gift_applied_cents: c.gift_applied_cents,
     amount_due_cents: c.amount_due_cents, test_mode: r.test_mode, fulfillment: delivering ? 'delivery' : 'pickup', delivery_address: address,
+    attribution: cleanAttribution(body.attribution, req),
   });
   await insert('order_items', lines.map((l) => ({ ...l, order_id: o.id })));
   await log(o.id, 'guest', 'placed', { ip });
@@ -346,8 +439,13 @@ async function submitForm(req: Request, body: any) {
     if (/^[a-z_]{1,30}$/.test(k)) data[k] = text(v, 2000);
   }
   let res: Response | null = null;
+  const attribution = cleanAttribution(body.attribution, req);
   if (kind === 'rewards') {
     res = await rewardsJoin(r, data);
+    const phone = normPhone(data.phone);
+    if (phone) await reportConversion(String(body.restaurant), {
+      type: 'vip_signup', externalId: `rewards-${phone}`, valueCents: 0, customer: { phone, email: data.email || undefined },
+    }, attribution, null);
   } else if (kind === 'reservation') {
     const phone = normPhone(data.phone), email = (data.email ?? '').toLowerCase();
     if (!data.name) throw new OrderError('Please enter your name.');
@@ -355,7 +453,11 @@ async function submitForm(req: Request, body: any) {
     if (!phone) throw new OrderError('Please enter a 10-digit phone number.');
     if (!validReservationDate(r, data.date)) throw new OrderError("We can't take a reservation on that date. Please pick a day we're open.");
     if (!data.time || !data.party_size) throw new OrderError('Please pick a time and party size.');
-    await insert('reservations', { restaurant_id: r.id, name: data.name, email, phone, res_date: data.date, res_time: text(data.time, 20), party_size: text(data.party_size, 20), requests: data.requests || null });
+    const [booking] = await insert('reservations', { restaurant_id: r.id, name: data.name, email, phone, res_date: data.date, res_time: text(data.time, 20), party_size: text(data.party_size, 20), requests: data.requests || null, attribution });
+    await reportConversion(String(body.restaurant), {
+      type: 'reservation', externalId: booking.id, reservationId: booking.id, valueCents: 0, customer: { phone, email },
+      extra: { res_date: data.date, res_time: text(data.time, 20), party_size: text(data.party_size, 20) },
+    }, attribution, null);
   }
   if (kind !== 'reservation' && kind !== 'rewards') await insert('form_submissions', { restaurant_id: r.id, kind, data });
   const lines = Object.entries(data).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`).join('\n');
@@ -410,16 +512,26 @@ async function giftBuy(req: Request, body: any) {
 
 // ---------- staff tools ----------
 async function staffTools(req: Request, body: any) {
-  const r = await rid(body.restaurant, 'id,name,phone,site_url,rewards_redeem_points,rewards_redeem_cents,test_mode');
+  const r = await rid(body.restaurant, 'id,slug,name,phone,site_url,rewards_redeem_points,rewards_redeem_cents,test_mode');
   const me = await staffFor(req, r.id);
   if (!me) return json({ ok: false, error: 'Please sign in again.' }, 401);
-  const manager = () => { if (me.role !== 'manager') throw new OrderError('Ask a manager to do this.'); };
+  const need = (perm: string) => { if (!me.perms.includes(perm)) throw new OrderError("Your login doesn't have access to this. Ask the owner."); };
+  const op = String(body.op ?? '');
+  const SECTION: Record<string, string> = {
+    reservations: 'reservations', reservation: 'reservations', messages: 'messages', message: 'messages',
+    rewards_find: 'rewards', rewards_adjust: 'rewards', gift_find: 'gift', gift_redeem: 'gift', gift_issue: 'gift',
+    team_list: 'team', team_save: 'team', team_remove: 'team',
+    mkt_report: 'marketing', mkt_campaigns: 'marketing', mkt_link: 'marketing', mkt_spend: 'marketing',
+  };
+  if (SECTION[op]) need(SECTION[op]);
+  if (op.startsWith('mkt_')) return await marketing(r, op, body);
+  if (op.startsWith('team_')) return await team(r, me, op, body);
   const id = encodeURIComponent(String(body.id ?? ''));
   const scope = `restaurant_id=eq.${r.id}`;
-  switch (String(body.op ?? '')) {
+  switch (op) {
     case 'counts': {
       const count = async (t: string, q: string) => (await db(`${t}?select=id&${scope}&${q}`)).length;
-      return json({ ok: true, reservations: await count('reservations', 'status=eq.requested'), messages: await count('form_submissions', 'status=eq.new') });
+      return json({ ok: true, reservations: me.perms.includes('reservations') ? await count('reservations', 'status=eq.requested') : 0, messages: me.perms.includes('messages') ? await count('form_submissions', 'status=eq.new') : 0 });
     }
     case 'reservations': {
       const today = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
@@ -450,7 +562,6 @@ async function staffTools(req: Request, body: any) {
     case 'rewards_adjust': {
       const delta = Math.round(Number(body.points));
       if (!Number.isInteger(delta) || !delta || Math.abs(delta) > 100000) throw new OrderError('Enter a number of points.');
-      if (delta > 0) manager();
       const [a] = await db(`rewards_accounts?select=id&id=eq.${id}&${scope}`);
       if (!a) throw new OrderError('Member not found.');
       const points = await rpc('rewards_change', { p_account: a.id, p_delta: delta, p_reason: delta > 0 ? 'added_by_staff' : 'redeemed_in_store', p_by: me.name });
@@ -471,7 +582,6 @@ async function staffTools(req: Request, body: any) {
       return json({ ok: true, balance_cents });
     }
     case 'gift_issue': {
-      manager();
       const cents = Math.round(Number(body.cents));
       if (!Number.isInteger(cents) || cents <= 0 || cents > 100000) throw new OrderError('Enter an amount.');
       const [card] = await insert('gift_cards', { restaurant_id: r.id, code: makeCode(16), initial_cents: cents, source: 'staff', buyer_name: text(body.name, 80) || me.name, test_mode: r.test_mode });
@@ -483,11 +593,94 @@ async function staffTools(req: Request, body: any) {
   }
 }
 
+// ---------- team access ----------
+// Anyone with 'team' access can add people, choose what they see, and remove them.
+// New logins get a one-time temporary password that the person adding them passes on.
+function tempPassword() {
+  const abc = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  const b = crypto.getRandomValues(new Uint8Array(14));
+  return [...b].map((x) => abc[x % abc.length]).join('');
+}
+async function team(r: any, me: any, op: string, body: any) {
+  const scope = `restaurant_id=eq.${r.id}`;
+  if (op === 'team_list') {
+    const rows = await db(`staff?select=user_id,name,role,permissions,created_at&${scope}&order=created_at.asc`);
+    const users = await Promise.all(rows.map(async (s: any) => {
+      const u = await fetch(`${SB_URL}/auth/v1/admin/users/${s.user_id}`, { headers: svc }).then((x) => x.json()).catch(() => ({}));
+      return { ...s, email: u.email ?? '', last_sign_in_at: u.last_sign_in_at ?? null, you: s.user_id === me.id };
+    }));
+    return json({ ok: true, rows: users, sections: ALL_PERMS, roles: ROLE_PERMS });
+  }
+  if (op === 'team_save') {
+    const email = text(body.email, 120).toLowerCase(), name = text(body.name, 80);
+    const role = ['owner', 'manager', 'kitchen', 'custom'].includes(body.role) ? body.role : 'custom';
+    const perms: string[] = role === 'custom' ? [...new Set<string>((Array.isArray(body.permissions) ? body.permissions : []).map(String))].filter((p) => ALL_PERMS.includes(p)) : ROLE_PERMS[role];
+    if (!validEmail(email)) throw new OrderError('Enter a valid email.');
+    if (!perms.length) throw new OrderError('Pick at least one section this person can use.');
+    let id = await rpc('auth_user_id', { p_email: email });
+    if (id === me.id && !perms.includes('team')) throw new OrderError("You can't remove your own team access.");
+    let password: string | null = null;
+    if (!id) {
+      password = tempPassword();
+      const made = await fetch(`${SB_URL}/auth/v1/admin/users`, { method: 'POST', headers: svc, body: JSON.stringify({ email, password, email_confirm: true }) });
+      const d = await made.json().catch(() => ({}));
+      if (!made.ok) throw new Error(`auth ${made.status}: ${d.msg ?? d.message ?? 'could not create login'}`);
+      id = d.id;
+    }
+    await db('staff?on_conflict=user_id,restaurant_id', {
+      method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({ user_id: id, restaurant_id: r.id, name: name || null, role, permissions: perms }),
+    });
+    await log(null, 'team', 'saved', { restaurant: r.id, user: id, role, permissions: perms, by: me.email });
+    return json({ ok: true, email, temp_password: password });
+  }
+  if (op === 'team_remove') {
+    const uid = String(body.user_id ?? '');
+    if (!/^[0-9a-f-]{36}$/.test(uid)) throw new OrderError('Person not found.');
+    if (uid === me.id) throw new OrderError("You can't remove yourself.");
+    await db(`staff?user_id=eq.${uid}&${scope}`, { method: 'DELETE' });
+    await log(null, 'team', 'removed', { restaurant: r.id, user: uid, by: me.email });
+    return json({ ok: true });
+  }
+  return json({ ok: false, error: 'Unknown action.' }, 400);
+}
+
+// ---------- marketing (attribution service) ----------
+// The admin's Marketing tab goes through here, so staff never handle the restaurant's API key.
+async function marketing(r: any, op: string, body: any) {
+  const ATTR_URL = (Deno.env.get('ATTRIBUTION_URL') ?? '').trim().replace(/\/$/, '');
+  const key = attrKeys()[r.slug] || attrKeys()['*'];
+  if (!ATTR_URL || !key) throw new OrderError('Marketing tracking is not set up for this restaurant yet.');
+  const call = async (path: string, init: RequestInit = {}) => {
+    const res = await fetch(`${ATTR_URL}${path}`, { ...init, headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(10000) });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) throw new OrderError(d.error ? `Marketing: ${d.error}` : 'Marketing data is not available right now.');
+    return d;
+  };
+  const q = `restaurant=${encodeURIComponent(r.slug)}`;
+  if (op === 'mkt_report') {
+    const [report, c] = await Promise.all([call(`/api/report?${q}`), call(`/api/campaigns?${q}`)]);
+    return json({ ok: true, report, campaigns: c.campaigns, qr_url: `${ATTR_URL}/api/qr` });
+  }
+  if (op === 'mkt_link') {
+    const c = body.campaign ?? {};
+    return json({ ok: true, ...(await call('/api/links', { method: 'POST', body: JSON.stringify({
+      restaurant: r.slug, slug: text(body.slug, 80) || undefined, destinationUrl: text(body.destinationUrl, 1000), isQr: body.isQr === true,
+      campaign: { name: text(c.name, 200), channel: text(c.channel, 50), promoCode: text(c.promoCode, 64) || undefined, trackingPhone: text(c.trackingPhone, 40) || undefined },
+    }) })) });
+  }
+  if (op === 'mkt_spend') {
+    return json({ ok: true, ...(await call('/api/spend', { method: 'POST', body: JSON.stringify({ restaurant: r.slug, campaignId: String(body.campaignId ?? ''), date: String(body.date ?? ''), amount: Number(body.amount) }) })) });
+  }
+  return json({ ok: false, error: 'Unknown action.' }, 400);
+}
+
 async function kitchen(req: Request, body: any) {
   const [o] = await db(`orders?select=*&id=eq.${encodeURIComponent(String(body.order_id ?? ''))}`);
   if (!o) return json({ ok: false, error: 'Order not found.' }, 404);
   const staff = await staffFor(req, o.restaurant_id);
   if (!staff) return json({ ok: false, error: 'Please sign in again.' }, 401);
+  if (!staff.perms.includes('kitchen')) return json({ ok: false, error: "Your login doesn't have kitchen access." }, 403);
   const to = { accept: 'accepted', ready: 'ready', complete: 'completed', cancel: 'cancelled' }[String(body.move)];
   if (!to || !(NEXT as any)[o.status]?.includes(to)) return json({ ok: false, error: `This order is already ${o.status}.` });
   const now = new Date().toISOString();
@@ -517,6 +710,10 @@ async function kitchen(req: Request, body: any) {
   if (!rows?.length) return json({ ok: false, error: 'Someone else just updated this order.' });
   await log(o.id, 'kitchen', to, { by: staff.name });
   if (to === 'cancelled') await rpc('order_release_credits', { p_order: o.id });
+  if (to === 'cancelled' && o.paid_at) {
+    const [slugRow] = await db(`restaurants?select=slug&id=eq.${o.restaurant_id}`);
+    await reportConversion(slugRow.slug, orderConversion(o, up.payment_status === 'refunded' ? 'refunded' : 'cancelled'), o.attribution, o.id);
+  }
   if (to === 'completed') await log(o.id, 'rewards', 'earned', { points: await rpc('order_earn_points', { p_order: o.id }) });
   const [r] = await db(`restaurants?select=name,site_url,phone&id=eq.${o.restaurant_id}`);
   if (to === 'ready') await sendEmail(o.email, `Your ${r.name} order is ready`, `Hi ${o.first_name}, order ${o.order_no} is ready${o.fulfillment === 'delivery' ? ' and waiting for your driver' : ' for pickup'}.`, o.id);
@@ -592,7 +789,9 @@ Deno.serve(async (req) => {
         return await staffTools(req, body);
       case 'pause': {
         const [r] = await db(`restaurants?select=id&slug=eq.${encodeURIComponent(String(body.restaurant ?? ''))}`);
-        if (!r || !(await staffFor(req, r.id))) return json({ ok: false, error: 'Please sign in again.' }, 401);
+        const who = r ? await staffFor(req, r.id) : null;
+        if (!who) return json({ ok: false, error: 'Please sign in again.' }, 401);
+        if (!who.perms.includes('kitchen')) return json({ ok: false, error: "Your login doesn't have kitchen access." }, 403);
         await patch('restaurants', `id=eq.${r.id}`, { accepting_orders: !!body.accepting });
         return json({ ok: true, accepting: !!body.accepting });
       }

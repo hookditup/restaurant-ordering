@@ -202,7 +202,7 @@
       }
       var btn = f.querySelector('button[type=submit]');
       btn.disabled = true;
-      fetch(ro.url + '/functions/v1/ordering', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'form', restaurant: ro.restaurant, form: kind, page: location.pathname, data: data }) })
+      fetch(ro.url + '/functions/v1/ordering', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'form', restaurant: ro.restaurant, form: kind, page: location.pathname, data: data, attribution: window.HRA ? window.HRA.get() : undefined }) })
         .then(function (r) { return r.json(); })
         .then(function (r) {
           if (!r.ok) { msg.textContent = r.error || 'Something went wrong. Please call us at ' + PHONE + '.'; msg.className = 'form-msg err'; return; }
