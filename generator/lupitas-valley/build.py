@@ -371,6 +371,7 @@ def extras():
         os.makedirs(f'{OUT}/{d}', exist_ok=True)
         for fn in os.listdir(f'{A}/{d}'): shutil.copy(f'{A}/{d}/{fn}', f'{OUT}/{d}/{fn}')
     os.makedirs(OUT + '/assets/ordering', exist_ok=True)
+    shutil.copytree(os.path.join(HERE, '..', '..', 'web', 'onboarding'), OUT + '/onboarding', dirs_exist_ok=True)
     for fn in ('ordering.js', 'ordering.css', 'order-status.js', 'guest-tools.js', 'kitchen.js', 'kitchen.css', 'admin.js', 'admin.css'):
         shutil.copy(os.path.join(HERE, '..', '..', 'web', fn), OUT + '/assets/ordering/' + fn)
     shutil.copy(HERE + '/src/site.css', OUT + '/assets/site.css'); shutil.copy(HERE + '/src/site.js', OUT + '/assets/site.js'); shutil.copy(HERE + '/src/config.js', OUT + '/assets/config.js')
