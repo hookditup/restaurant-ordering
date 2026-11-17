@@ -105,3 +105,29 @@
 .ro-field textarea { resize: vertical; }
 .ro-pick { background: var(--ro-soft); border-radius: 8px; padding: .6rem .75rem; margin: 0 0 .5rem; }
 @media (max-width: 480px) { .ro-two { grid-template-columns: 1fr; } }
+/* Reservations: step-by-step */
+.ro-wiz { min-height: 30rem; }
+.ro-rs-steps { list-style: none; display: grid; grid-template-columns: repeat(4, 1fr); gap: .25rem; margin: 0 0 1rem; padding: 0; counter-reset: s; }
+.ro-rs-steps li { position: relative; text-align: center; font-size: .85rem; color: var(--ro-mute); }
+.ro-rs-steps li::before { content: ""; position: absolute; top: 18px; left: -50%; width: 100%; height: 2px; background: var(--ro-line); z-index: 0; }
+.ro-rs-steps li:first-child::before { display: none; }
+.ro-rs-steps li.ro-st-past::before, .ro-rs-steps li.ro-st-now::before { background: var(--ro-accent); }
+.ro-rs-steps button, .ro-rs-steps .ro-lbl { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; gap: .25rem; width: 100%; background: none; border: 0; padding: 0; font: inherit; color: inherit; }
+.ro-rs-steps button { cursor: pointer; color: var(--ro-ink); }
+.ro-rs-steps button:hover span:last-child { text-decoration: underline; }
+.ro-dot { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; background: #fff; border: 2px solid #8c8c8c; color: var(--ro-mute); }
+.ro-st-past .ro-dot { background: var(--ro-accent); border-color: var(--ro-accent); color: #fff; }
+.ro-st-now { color: var(--ro-ink) !important; font-weight: 700; }
+.ro-st-now .ro-dot { border-color: var(--ro-accent); color: var(--ro-accent); box-shadow: 0 0 0 4px rgb(147 21 21 / .12); }
+.ro-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.ro-step h2 { margin-bottom: .2rem; }
+.ro-sum { color: var(--ro-mute); font-weight: 600; margin: 0 0 .8rem; min-height: 1.2em; }
+.ro-sum:empty { display: none; }
+.ro-step-body { min-height: 12rem; }
+.ro-nav { display: flex; margin-top: 1rem; }
+.ro-rs-back { min-height: 44px; padding: .5rem 1rem; border: 1px solid #8c8c8c; border-radius: 8px; background: #fff; font: inherit; font-weight: 600; color: var(--ro-ink); cursor: pointer; }
+.ro-rs-back[hidden] { display: none; }
+.ro-big .ro-add { margin-top: .4rem; }
+.ro-done { text-align: center; padding: 2rem 1.1rem; }
+.ro-check { width: 56px; height: 56px; margin: 0 auto .5rem; border-radius: 50%; background: #14652d; color: #fff; font-size: 1.8rem; display: grid; place-items: center; }
+@media (prefers-reduced-motion: no-preference) { .ro-step-body { animation: ro-in .18s ease-out; } @keyframes ro-in { from { opacity: 0; transform: translateX(8px); } to { opacity: 1; transform: none; } } }
