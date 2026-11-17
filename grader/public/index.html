@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Free Restaurant Website Grader | Hook'd IT Up</title>
+<meta name="description" content="Get your restaurant's online score in about a minute: Google listing, website, online ordering and how you rank against nearby competitors.">
+<link rel="icon" href="/favicon.ico">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700;800&family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap">
+<link rel="stylesheet" href="/app.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to main content</a>
+<header class="top"><div class="wrap"><a href="https://hookditup.com"><img src="/logo-white.png" alt="Hook'd IT Up" width="176" height="44"></a></div></header>
+<main id="main">
+  <section class="hero" id="start">
+    <div class="wrap">
+      <p class="eyebrow">Free restaurant grader</p>
+      <h1>How does your restaurant stack up online?</h1>
+      <p class="lead">Get a score in about a minute. We check your Google listing, website, online ordering, and where you rank against nearby restaurants.</p>
+      <form id="search" class="search" role="search">
+        <label for="q">Restaurant name and city</label>
+        <div class="search-row">
+          <input id="q" name="q" autocomplete="off" placeholder="Tacos El Guero, Heber City" required minlength="3">
+          <button type="submit">Find my restaurant</button>
+        </div>
+      </form>
+      <div id="picks" aria-live="polite"></div>
+    </div>
+  </section>
+
+  <section id="loading" class="wrap panel" hidden tabindex="-1" aria-live="polite">
+    <h2>Grading <span id="loading-name"></span></h2>
+    <ol class="steps">
+      <li>Reading your Google listing</li>
+      <li>Loading your website</li>
+      <li>Testing speed on a phone (this one takes the longest)</li>
+      <li>Comparing you with nearby restaurants</li>
+    </ol>
+    <p class="muted">This usually takes 20 to 60 seconds.</p>
+  </section>
+
+  <section id="result" class="wrap" hidden tabindex="-1"></section>
+  <p id="msg" class="wrap msg" role="alert"></p>
+</main>
+<footer class="foot"><div class="wrap">
+  <p>© Hook'd IT Up · Heber City, Utah · <a href="https://hookditup.com/privacy-policy/">Privacy policy</a> · <a href="https://hookditup.com/terms/">Terms</a></p>
+  <p class="muted">Scores use public data from Google and your website at the time of the check. Rankings can differ by searcher and location.</p>
+</div></footer>
+</body>
+</html>
