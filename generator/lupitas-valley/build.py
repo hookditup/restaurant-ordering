@@ -14,7 +14,7 @@ e = html.escape
 slug_map = json.load(open(os.path.join(A, 'menu_map.json'), encoding='utf8'))
 ARROW = '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>'
 
-SEED = '/home/claude/restaurant-ordering/seed/lupitas/lupitas-seed.json'
+SEED = os.path.join(HERE, '..', '..', 'seed', 'lupitas', 'lupitas-seed.json')
 def price_text(i, groups):
     low, more = i['price_cents'], False
     for gid in i['groups']:
@@ -237,10 +237,11 @@ def pdfs():
         from PIL import Image
         imgs = ''
         for k, p in enumerate(pages, 1):
-            w, h = Image.open(p).size
-            imgs += f'<img class="pdf-page" src="/menus/img/{os.path.basename(p)}" alt="{e(n)} menu, page {k} of {len(pages)}. Download the PDF for the full text." width="{w}" height="{h}" loading="lazy" decoding="async">'
+            w, h = Image.open(p).size  # rendered at 2x by pdfpages.py, so show at half size
+            src = f'/menus/img/{os.path.basename(p)}'
+            imgs += f'<a class="pdf-zoom" href="{src}"><img class="pdf-page" src="{src}" alt="{e(n)} menu, page {k} of {len(pages)}. Opens full size for zooming." width="{w // 2}" height="{h // 2}" loading="lazy" decoding="async"></a>'
         secs += f'''<section class="pdf" id="{s}"><div class="head-row"><h2>{n}</h2>{btn('Download', f'/menus/{s}.pdf', 'ghost')}</div>{imgs}</section>'''
-    return phead("Menus", h1="Menus | Lupita's Valley", vis='p') + f'<nav class="jump" aria-label="Menus"><div class="wrap">{jump}</div></nav><div class="wrap">{secs}</div>'
+    return phead("Menus", h1="Menus | Lupita's Valley", vis='p') + f'<nav class="jump" aria-label="Menus"><div class="wrap">{jump}</div></nav><div class="wrap"><p class="pdf-tip">Tap or click any menu page to open it full size.</p>{secs}</div>'
 
 def build():
     for sub in ('assets',): os.makedirs(os.path.join(OUT, sub), exist_ok=True)
