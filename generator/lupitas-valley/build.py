@@ -228,7 +228,8 @@ def menu():
     page('/menu', "Lupita's Valley Online Menu | Best Mexican Food in Heber City", "Lupita's Valley Online Menu. Save Money Ordering Directly Here. Healthy Options. Fast Service. Friendly Team. Top Rated.", body, '/menu', f'<link rel="stylesheet" href="/assets/ordering/ordering.css">\n<script type="application/ld+json">{menu_ld}</script>\n')
 
 def pdfs():
-    L = [('Dinner', 'dinner'), ('Brunch', 'brunch'), ('Appetizers', 'appetizers'), ('Kids Menu', 'kids'), ('Desserts', 'desserts'), ('Soft Drinks', 'soft-drinks'), ('Spirits and Cocktails', 'spirits-cocktails')]
+    L = [('Dinner', 'dinner'), ('Brunch', 'brunch'), ('Kids Menu', 'kids'), ('Appetizers', 'appetizers'), ('Desserts', 'desserts'), ('Soft Drinks', 'soft-drinks'), ('Spirits and Cocktails', 'spirits-cocktails')]
+    PAIRS = {'appetizers': 'desserts', 'soft-drinks': 'spirits-cocktails'}  # smaller menus sit side by side
     jump = ''.join(f'<a href="#{s}">{n}</a>' for n, s in L)
     import glob
     secs = ''
@@ -240,7 +241,10 @@ def pdfs():
             w, h = Image.open(p).size  # rendered at 2x by pdfpages.py, so show at half size
             src = f'/menus/img/{os.path.basename(p)}'
             imgs += f'<a class="pdf-zoom" href="{src}"><img class="pdf-page" src="{src}" alt="{e(n)} menu, page {k} of {len(pages)}. Opens full size for zooming." width="{w // 2}" height="{h // 2}" loading="lazy" decoding="async"></a>'
-        secs += f'''<section class="pdf" id="{s}"><div class="head-row"><h2>{n}</h2>{btn('Download', f'/menus/{s}.pdf', 'ghost')}</div>{imgs}</section>'''
+        sec = f'''<section class="pdf" id="{s}"><div class="head-row"><h2>{n}</h2>{btn('Download', f'/menus/{s}.pdf', 'ghost')}</div>{imgs}</section>'''
+        if s in PAIRS: secs += '<div class="pdf-pair">' + sec
+        elif s in PAIRS.values(): secs += sec + '</div>'
+        else: secs += sec
     return phead("Menus", h1="Menus | Lupita's Valley", vis='p') + f'<nav class="jump" aria-label="Menus"><div class="wrap">{jump}</div></nav><div class="wrap"><p class="pdf-tip">Tap or click any menu page to open it full size.</p>{secs}</div>'
 
 def build():
