@@ -229,7 +229,7 @@ def menu():
 
 def pdfs():
     L = [('Dinner', 'dinner'), ('Brunch', 'brunch'), ('Kids Menu', 'kids'), ('Appetizers', 'appetizers'), ('Desserts', 'desserts'), ('Soft Drinks', 'soft-drinks'), ('Spirits and Cocktails', 'spirits-cocktails')]
-    PAIRS = {'appetizers': 'desserts', 'soft-drinks': 'spirits-cocktails'}  # smaller menus sit side by side
+    ROW = ('appetizers', 'desserts', 'soft-drinks')  # small card menus sit side by side
     jump = ''.join(f'<a href="#{s}">{n}</a>' for n, s in L)
     import glob
     secs = ''
@@ -242,8 +242,8 @@ def pdfs():
             src = f'/menus/img/{os.path.basename(p)}'
             imgs += f'<a class="pdf-zoom" href="{src}"><img class="pdf-page" src="{src}" alt="{e(n)} menu, page {k} of {len(pages)}. Opens full size for zooming." width="{w // 2}" height="{h // 2}" loading="lazy" decoding="async"></a>'
         sec = f'''<section class="pdf" id="{s}"><div class="head-row"><h2>{n}</h2>{btn('Download', f'/menus/{s}.pdf', 'ghost')}</div>{imgs}</section>'''
-        if s in PAIRS: secs += '<div class="pdf-pair">' + sec
-        elif s in PAIRS.values(): secs += sec + '</div>'
+        if s == ROW[0]: secs += '<div class="pdf-row">' + sec
+        elif s == ROW[-1]: secs += sec + '</div>'
         else: secs += sec
     return phead("Menus", h1="Menus | Lupita's Valley", vis='p') + f'<nav class="jump" aria-label="Menus"><div class="wrap">{jump}</div></nav><div class="wrap"><p class="pdf-tip">Tap or click any menu page to open it full size.</p>{secs}</div>'
 
