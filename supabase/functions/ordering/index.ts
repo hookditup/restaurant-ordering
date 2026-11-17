@@ -5,7 +5,8 @@
 //   status     guest: order progress by private token
 //   kitchen    staff: accept | ready | complete | cancel an order
 //   pause      staff: stop or resume taking orders
-//   form       guest: website forms, reservation requests and rewards sign-ups
+//   form       guest: website forms, table bookings and rewards sign-ups
+//   res_info, res_month, res_slots, res_cancel   guest: reservation calendar
 //   rewards_info, rewards_check, gift_buy, gift_view, gift_check   guest
 //   staff      staff: reservations, messages, rewards and gift cards
 //   ?hook=stripe  Stripe webhook
@@ -13,7 +14,7 @@
 //   DOORDASH_DEVELOPER_ID, DOORDASH_KEY_ID, DOORDASH_SIGNING_SECRET (DoorDash Drive),
 //   ATTRIBUTION_URL + ATTRIBUTION_KEYS (marketing attribution; JSON map of restaurant slug -> API key).
 // With no Stripe key, a restaurant in test mode marks orders as test-paid. Live mode never does.
-import { addressLine, applyGift, cleanAddress, cleanCode, cleanGuest, makeCode, NEXT, normPhone, OrderError, pickupSlots, priceCart, totals, validPickup, validReservationDate } from './core.js';
+import { addressLine, applyGift, cleanAddress, cleanCode, cleanGuest, makeCode, NEXT, normPhone, OrderError, pickupSlots, priceCart, totals, validPickup } from './core.js';
 
 const SB_URL = Deno.env.get('SUPABASE_URL')!;
 const SB_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -447,22 +448,48 @@ async function submitForm(req: Request, body: any) {
       type: 'vip_signup', externalId: `rewards-${phone}`, valueCents: 0, customer: { phone, email: data.email || undefined },
     }, attribution, null);
   } else if (kind === 'reservation') {
-    const phone = normPhone(data.phone), email = (data.email ?? '').toLowerCase();
-    if (!data.name) throw new OrderError('Please enter your name.');
-    if (!validEmail(email)) throw new OrderError('Please enter a valid email.');
-    if (!phone) throw new OrderError('Please enter a 10-digit phone number.');
-    if (!validReservationDate(r, data.date)) throw new OrderError("We can't take a reservation on that date. Please pick a day we're open.");
-    if (!data.time || !data.party_size) throw new OrderError('Please pick a time and party size.');
-    const [booking] = await insert('reservations', { restaurant_id: r.id, name: data.name, email, phone, res_date: data.date, res_time: text(data.time, 20), party_size: text(data.party_size, 20), requests: data.requests || null, attribution });
-    await reportConversion(String(body.restaurant), {
-      type: 'reservation', externalId: booking.id, reservationId: booking.id, valueCents: 0, customer: { phone, email },
-      extra: { res_date: data.date, res_time: text(data.time, 20), party_size: text(data.party_size, 20) },
-    }, attribution, null);
+    res = await bookTable(r, data, String(body.restaurant), attribution);
   }
   if (kind !== 'reservation' && kind !== 'rewards') await insert('form_submissions', { restaurant_id: r.id, kind, data });
   const lines = Object.entries(data).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`).join('\n');
   await sendEmail(r.forms_email, `${r.name}: new ${kind.replace(/-/g, ' ')} form`, `${lines}\n\nSent from ${text(body.page, 100) || 'the website'}.`, null, validEmail(data.email ?? '') ? data.email : undefined);
   return res ?? json({ ok: true });
+}
+
+// ---------- reservations ----------
+const resDateText = (d: string) => new Date(`${d}T12:00:00Z`).toLocaleDateString('en-US', { timeZone: 'UTC', weekday: 'long', month: 'long', day: 'numeric' });
+
+async function bookTable(r: any, data: Record<string, string>, slug: string, attribution: any) {
+  const phone = normPhone(data.phone), email = (data.email ?? '').toLowerCase(), name = text(data.name, 80);
+  const guests = Math.floor(Number(data.guests)), start_min = Math.floor(Number(data.start_min));
+  if (!name) throw new OrderError('Please enter your name.');
+  if (!validEmail(email)) throw new OrderError('Please enter a valid email.');
+  if (!phone) throw new OrderError('Please enter a 10-digit phone number.');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(data.date))) throw new OrderError('Please pick a date.');
+  if (!Number.isInteger(guests) || guests < 1 || guests > 200) throw new OrderError('Please pick your party size.');
+  if (!Number.isInteger(start_min) || start_min < 0 || start_min > 1439) throw new OrderError('Please pick a time.');
+  const b = await rpc('res_book', { rid: r.id, p: { name, email, phone, date: data.date, start_min, guests, requests: text(data.requests, 500) } });
+  if (!b.ok) throw new OrderError(b.error);
+  if (attribution) await patch('reservations', `id=eq.${b.id}`, { attribution });
+  await reportConversion(slug, {
+    type: 'reservation', externalId: b.id, reservationId: b.id, valueCents: 0, customer: { phone, email },
+    extra: { res_date: data.date, res_time: b.label, party_size: String(guests) },
+  }, attribution, null);
+  data.time = b.label; data.status = b.status; delete data.start_min; // readable in the restaurant's email
+  const [x] = await db(`restaurants?select=name,phone,site_url&id=eq.${r.id}`);
+  const when = `${resDateText(data.date)} at ${b.label}`;
+  const cancel = `${x.site_url}/reservations/?cancel=${b.token}`;
+  await sendEmail(email, b.status === 'confirmed' ? `Your ${x.name} reservation is confirmed` : `We got your ${x.name} reservation request`,
+    b.status === 'confirmed'
+      ? `Hi ${name}, you're all set for ${when}, party of ${guests}. We look forward to seeing you!\n\nNeed to cancel? ${cancel}\nQuestions? Call ${x.phone}.`
+      : `Hi ${name}, thanks for your request for ${when}, party of ${guests}. For larger groups we confirm by phone or email shortly.\n\nNeed to cancel? ${cancel}\nQuestions? Call ${x.phone}.`, null);
+  return json({ ok: true, status: b.status, when, guests, large: b.large });
+}
+
+async function resInfo(body: any) {
+  const r = await rid(body.restaurant, 'id,phone,timezone,res_max_online,res_days_ahead,res_slot_minutes');
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: r.timezone }).format(new Date());
+  return json({ ok: true, phone: r.phone, max_online: r.res_max_online, days_ahead: r.res_days_ahead, today });
 }
 
 // ---------- gift cards ----------
@@ -534,8 +561,14 @@ async function staffTools(req: Request, body: any) {
       return json({ ok: true, reservations: me.perms.includes('reservations') ? await count('reservations', 'status=eq.requested') : 0, messages: me.perms.includes('messages') ? await count('form_submissions', 'status=eq.new') : 0 });
     }
     case 'reservations': {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(String(body.date))) {
+        const rows = await db(`reservations?select=*&${scope}&res_date=eq.${body.date}&status=in.(requested,confirmed)&order=start_min.asc.nullslast,res_time.asc&limit=300`);
+        const [cap] = await db(`restaurants?select=res_capacity&id=eq.${r.id}`);
+        const blocks = await db(`res_blocks?select=id,start_min,end_min,reason&${scope}&block_date=eq.${body.date}&order=start_min.asc.nullsfirst`);
+        return json({ ok: true, rows, slots: await rpc('res_day', { rid: r.id, d: body.date }), capacity: cap.res_capacity, blocks });
+      }
       const today = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-      return json({ ok: true, rows: await db(`reservations?select=*&${scope}&res_date=gte.${today}&status=in.(requested,confirmed)&order=res_date.asc,res_time.asc&limit=100`) });
+      return json({ ok: true, rows: await db(`reservations?select=*&${scope}&res_date=gte.${today}&status=in.(requested,confirmed)&order=res_date.asc,start_min.asc.nullslast&limit=100`) });
     }
     case 'reservation': {
       const to = { confirm: 'confirmed', decline: 'declined', cancel: 'cancelled' }[String(body.move)];
@@ -771,6 +804,32 @@ Deno.serve(async (req) => {
         const r = await rid(body.restaurant);
         const [a] = await db(`rewards_accounts?select=name,points&restaurant_id=eq.${r.id}&code=eq.${cleanCode(body.code)}&phone=eq.${encodeURIComponent(normPhone(body.phone))}`);
         return a ? json({ ok: true, points: a.points, name: a.name }) : json({ ok: false, error: "We couldn't match that phone number and code." });
+      }
+      case 'res_info':
+        return await resInfo(body);
+      case 'res_month': {
+        await limited(req, 'res-cal', 120);
+        const r = await rid(body.restaurant);
+        if (!/^\d{4}-\d{2}$/.test(String(body.month))) throw new OrderError('Pick a month.');
+        const guests = Math.max(1, Math.min(200, Math.floor(Number(body.guests)) || 2));
+        return json({ ok: true, days: await rpc('res_month', { rid: r.id, month_start: `${body.month}-01`, p_guests: guests }) });
+      }
+      case 'res_slots': {
+        await limited(req, 'res-cal', 120);
+        const r = await rid(body.restaurant);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(String(body.date))) throw new OrderError('Pick a date.');
+        return json({ ok: true, slots: await rpc('res_day', { rid: r.id, d: body.date }) });
+      }
+      case 'res_cancel': {
+        await limited(req, 'res-cancel', 10);
+        const token = String(body.token ?? '').replace(/[^a-f0-9]/g, '');
+        const c = token ? await rpc('res_cancel', { p_token: token }) : { ok: false, error: 'Reservation not found.' };
+        if (!c.ok) return json(c);
+        const [x] = await db(`restaurants?select=name,phone,forms_email&id=eq.${c.restaurant_id}`);
+        const when = `${resDateText(c.date)} at ${c.label}`;
+        await sendEmail(c.email, `Your ${x.name} reservation is cancelled`, `Hi ${c.name}, your reservation for ${when} is cancelled. We hope to see you another time!`, null);
+        await sendEmail(x.forms_email, `${x.name}: reservation cancelled`, `${c.name} cancelled their reservation for ${when}, party of ${c.guests}.`, null);
+        return json({ ok: true, when });
       }
       case 'gift_buy':
         return await giftBuy(req, body);
