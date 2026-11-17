@@ -78,3 +78,7 @@ body{padding-bottom:56px}.bar{display:grid;grid-template-columns:repeat(2,1fr);p
 }
 @media (max-width:480px){.hdr-cta{display:none}}
 @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}.hero video{display:none}}
+
+.addr{color:inherit;text-decoration:underline;text-underline-offset:3px}.addr:hover{color:var(--red,#931515)}
+.intro{margin-bottom:2.25rem}.intro h2{margin-bottom:.5rem}.lead-p{font-size:1.15rem;color:var(--mute)}
+.form-card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:clamp(1.25rem,4vw,2rem)}.form-card>h2{font-size:1.6rem;margin:0 0 .75rem}.form-card>p{margin:0 0 1.5rem}

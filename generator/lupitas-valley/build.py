@@ -6,6 +6,8 @@ DOMAIN = 'https://lupitasvalley.com'
 PHONE = '(435) 654-3465'; TEL = 'tel:+14356543465'; EMAIL = 'lupitasvalley2021@gmail.com'
 ADDR1 = '650 W 100 S #10'; ADDR2 = 'Heber City, UT 84032'
 MAPS = "https://www.google.com/maps/search/?api=1&query=Lupita%27s+Valley+650+W+100+S+Heber+City+UT+84032"
+def addr(text):
+    return f'<a class="addr" href="{MAPS}" rel="noopener" target="_blank">{text}<span class="sr-only"> (opens Google Maps in a new tab)</span></a>'
 DIRS = "https://www.google.com/maps/dir/?api=1&destination=Lupita%27s+Valley+650+W+100+S+Heber+City+UT+84032"
 HOURS = [('Monday', '10:30 AM - 9:00 PM'), ('Tuesday', '10:30 AM - 9:00 PM'), ('Wednesday', '10:30 AM - 9:00 PM'), ('Thursday', '10:30 AM - 9:00 PM'), ('Friday', '10:30 AM - 10:00 PM'), ('Saturday', '10:30 AM - 10:00 PM'), ('Sunday', 'Closed')]
 NAV = [('Menu', '/menu'), ('Dine-In Menu', '/page/pdf-menus'), ('Drinks', '/page/drinks'), ('Catering', '/catering'), ('Reservations', '/reservations')]
@@ -100,7 +102,7 @@ def page(path, title, desc, body, active='', extra_head='', robots=''):
 <footer class="ftr">
 <div class="wrap ftr-grid">
 <div><img src="/img/site/logo.png" alt="Lupita's Valley" width="193" height="48" loading="lazy">
-<p>{ADDR1}<br>{ADDR2}</p><p><a href="{TEL}">{PHONE}</a><br><a href="mailto:{EMAIL}">{EMAIL}</a></p>
+<p>{addr(ADDR1 + '<br>' + ADDR2)}</p><p><a href="{TEL}">{PHONE}</a><br><a href="mailto:{EMAIL}">{EMAIL}</a></p>
 <p><a href="https://instagram.com/lupitasvalley" rel="noopener">Instagram</a></p></div>
 <div><h2>Explore</h2><ul class="ftr-links">{foot}</ul></div>
 <div><h2>Hours</h2><ul class="hours">{hours}</ul></div>
@@ -126,7 +128,7 @@ def feat(n):
     return f'<a class="feat" href="/menu#{cid(next(c["name"] for c in CATS if i in c["items"]))}">{img(f"/img/menu/{i["img"]}.webp", n, 400, 300)}<span>{e(n)}</span></a>'
 def location_block():
     hours = ''.join(f'<li><span>{d}</span><span>{t}</span></li>' for d, t in HOURS)
-    return f'''<section class="sec"><div class="wrap loc"><div><h2>Our location</h2><h3>Lupita's Valley</h3><p>{ADDR1}<br>{ADDR2}</p>
+    return f'''<section class="sec"><div class="wrap loc"><div><h2>Our location</h2><h3>Lupita's Valley</h3><p>{addr(ADDR1 + '<br>' + ADDR2)}</p>
 <p><a href="{TEL}">Call {PHONE}</a><br><a href="mailto:{EMAIL}">Email {EMAIL}</a></p>
 <p class="today" data-today></p><ul class="hours">{hours}</ul><div class="row">{btn('Get directions', DIRS, 'ghost', ' rel="noopener"')}{order_btn()}</div></div>
 <iframe title="Map showing Lupita's Valley in Heber City" src="https://www.google.com/maps?q=650+W+100+S+%2310,+Heber+City,+UT+84032&output=embed" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe></div></section>'''
@@ -143,7 +145,7 @@ def tag_ld(name, items):
         rows.append({'@type': 'MenuItem', 'name': i['name'], 'description': i['desc'], **({'offers': {'@type': 'Offer', 'price': m.group(0), 'priceCurrency': 'USD'}} if m else {})})
     return ld({'@context': 'https://schema.org', '@type': 'ItemList', 'name': f"{name} at Lupita's Valley", 'description': f"{name} dishes available at Lupita's Valley", 'numberOfItems': len(rows), 'itemListElement': rows})
 def faq(pairs):
-    return '<div class="faq">' + ''.join(f'<details><summary>{e(q)}</summary><p>{a}</p></details>' for q, a in pairs) + '</div>'
+    return '<div class="faq">' + ''.join(f'<details><summary>{e(q)}</summary><p>{a.replace(ADDR1, addr(ADDR1))}</p></details>' for q, a in pairs) + '</div>'
 def phead(h, sub='', h1=None, vis='h2', h2=None):
     # Live pages with a keyword H1 hide it visually, so the banner keeps its short heading.
     top = f'<h1 class="sr-only">{e(h1)}</h1><{vis} class="ph">{e(h)}</{vis}>' if h1 else f'<h1>{e(h)}</h1>'
@@ -222,7 +224,7 @@ def menu():
         anchor = cid(c["name"]) + ('-dinner' if 'Dinner' in (c['avail'] or '') else '')
         secs += f'<section class="cat" id="{anchor}"><h2>{e(c["name"])}</h2>{sub}<div class="items">{"".join(card(i) for i in c["items"])}</div></section>'
     menu_ld = json.dumps({'@context': 'https://schema.org', '@type': 'Menu', 'name': "Lupita's Valley Menu", 'url': DOMAIN + '/menu', 'hasMenuSection': [{'@type': 'MenuSection', 'name': c['name'], 'hasMenuItem': [{'@type': 'MenuItem', 'name': i['name'], 'description': i['desc'], 'offers': {'@type': 'Offer', 'price': i['price'].strip('$+'), 'priceCurrency': 'USD'}} for i in c['items']]} for c in CATS]}, ensure_ascii=False)
-    body = f'''<section class="phead"><div class="wrap"><h1>Lupita's Valley Menu</h1><p>{ADDR1}, Heber City, UT · <span data-today></span></p><div class="row" style="justify-content:center">{order_btn()}{btn('Dine-In Menu', '/page/pdf-menus', 'ghost')}</div></div></section>
+    body = f'''<section class="phead"><div class="wrap"><h1>Lupita's Valley Menu</h1><p>{addr(ADDR1 + ', Heber City, UT')} · <span data-today></span></p><div class="row" style="justify-content:center">{order_btn()}{btn('Dine-In Menu', '/page/pdf-menus', 'ghost')}</div></div></section>
 <div class="wrap menu"><div id="ro-menu"><section class="cat"><h2>Popular</h2><div class="items">{pop}</div></section>{secs}</div></div>
 <script src="/assets/ordering/ordering.js" defer></script>'''
     page('/menu', "Lupita's Valley Online Menu | Best Mexican Food in Heber City", "Lupita's Valley Online Menu. Save Money Ordering Directly Here. Healthy Options. Fast Service. Friendly Team. Top Rated.", body, '/menu', f'<link rel="stylesheet" href="/assets/ordering/ordering.css">\n<script type="application/ld+json">{menu_ld}</script>\n')
@@ -269,7 +271,7 @@ def build():
     f = form('party', [field('name', 'Name'), field('phone', 'Phone', 'tel'), field('email', 'Email', 'email'), field('company', 'Company', req=False), field('people', 'Number of People', 'number'), field('event_at', 'Date and time of the event', 'datetime-local'), field('occasion', 'Select Occasion', opts=['Birthday', 'Quinceañera', 'Graduation', 'Baby Shower', 'Family Reunion', 'Office Function', 'Rehearsal Party', 'Other']), field('budget', 'Budget per Person', req=False), field('details', 'Description / Requests', 'textarea', False), field('heard', 'How did you hear about us?', req=False)], 'Submit', sms=True)
     body = phead('Celebrate With Us', 'Birthdays, quinceañeras, graduations, baby showers — we make room for the moments that matter.', h1="Parties & Events | Lupita's Valley") + split('Groups of 6 to 50', 'We host groups for any occasion — family reunions, office dinners, rehearsal parties — with homestyle Michoacán cooking everyone will remember.', 'parties-groups', 'Groups of 6 to 50: a group table at Lupita\'s Valley') \
         + gallery('A Space Worth Gathering In', [('interior-1', 'Warmly lit restaurant interior with wooden tables, chairs, and Southwestern decor, including a large potted plant.'), ('interior-2', 'Warm, rustic restaurant interior with wooden tables, red wainscoting, and barn doors leading to another dining area.'), ('interior-3', 'Restaurant interior with booth seating, hanging lights, and colorful artwork on cream-colored walls.'), ('exterior', "Lupita's Mexican Restaurant exterior at dusk, adorned with string lights and a wooden boardwalk."), ('interior-4', 'Cozy restaurant interior with wooden tables and chairs, yellow walls, and red wainscoting.'), ('register', 'Vintage wooden cash register and stacks of plates on a rustic wooden counter with red wainscoting.')]) \
-        + f'''<section class="sec"><div class="wrap narrow"><h2>Reserve Your Party Date</h2><p>Tell us your date, party size, and occasion. We'll take care of the rest.</p><h2>Group Reservations and Private Parties</h2><p>Whether it's a bday party, baby shower, office function or any other special event, please fill out the form below and we'll do our best to accommodate your desired date and any requests you may have to make your party/celebration memorable.</p>{f}</div></section>'''
+        + f'''<section class="sec"><div class="wrap narrow"><div class="intro center-t"><h2>Reserve Your Party Date</h2><p class="lead-p">Tell us your date, party size, and occasion. We'll take care of the rest.</p></div><div class="form-card"><h2>Group Reservations and Private Parties</h2><p>Whether it's a bday party, baby shower, office function or any other special event, please fill out the form below and we'll do our best to accommodate your desired date and any requests you may have to make your party/celebration memorable.</p>{f}</div></div></section>'''
     page('/page/parties', "Parties & Events | Lupita's Valley", "Find out more about Parties & Events at Lupita's Valley", body, '/page/parties')
     # story
     body = phead('A Mother-Daughter Kitchen', h1="About Us | Lupita's Valley") + split('A Mother-Daughter Kitchen', "We're Lupita and Carla Cruz-Calderón. In 2021, we closed our previous restaurant, Tarahumara, and reopened as Lupita's Valley — a chance to dig deeper into the flavors and traditions that define our family's roots.", 'exterior', "A Mother-Daughter Kitchen: Lupita's Valley at dusk", btn('Read Our Story in the Park Record', 'https://www.parkrecord.com/2025/12/26/lupitas-valley-reinvents-itself-once-again/', 'ghost', ' rel="noopener"')).replace('<h2>A Mother-Daughter Kitchen</h2>', '<h2>Our Story</h2>') \
@@ -279,11 +281,11 @@ def build():
     page('/page/our-story', "About Us | Lupita's Valley", "Find out more about About Us at Lupita's Valley", body)
     # contact
     f = form('contact', [field('name', 'Name'), field('email', 'Email', 'email'), field('phone', 'Phone', 'tel'), field('message', 'Message', 'textarea')], 'Send')
-    body = phead('Get In Touch With Us', "Get in touch with Lupita's Valley Mexican Restaurant for authentic Mexican flavors, fresh ingredients, and a welcoming dining experience in Heber City.", h1="Contact Us | Lupita's Valley") + f'''<section class="sec"><div class="wrap split"><div class="split-t"><h2>Contact Us</h2><p><strong>Address:</strong> {ADDR1}, {ADDR2}<br><strong>Phone:</strong> <a href="{TEL}">{PHONE}</a></p><p><strong>Hours:</strong><br>Monday–Thursday: 10:30 AM–9 PM<br>Friday–Saturday: 10:30 AM–10 PM<br>Sunday: Closed</p>{btn('Get Directions', DIRS, 'ghost', ' rel="noopener"')}</div><div><p>Please complete the form below and we'll get back to you as soon as we can.</p>{f}</div></div></section>'''
+    body = phead('Get In Touch With Us', "Get in touch with Lupita's Valley Mexican Restaurant for authentic Mexican flavors, fresh ingredients, and a welcoming dining experience in Heber City.", h1="Contact Us | Lupita's Valley") + f'''<section class="sec"><div class="wrap split"><div class="split-t"><h2>Contact Us</h2><p><strong>Address:</strong> {addr(ADDR1 + ', ' + ADDR2)}<br><strong>Phone:</strong> <a href="{TEL}">{PHONE}</a></p><p><strong>Hours:</strong><br>Monday–Thursday: 10:30 AM–9 PM<br>Friday–Saturday: 10:30 AM–10 PM<br>Sunday: Closed</p>{btn('Get Directions', DIRS, 'ghost', ' rel="noopener"')}</div><div><p>Please complete the form below and we'll get back to you as soon as we can.</p>{f}</div></div></section>'''
     page('/page/contact-us', "Contact Us | Lupita's Valley", "Find out more about Contact Us at Lupita's Valley", body)
     # careers
     f = form('careers', [field('name', 'Full name'), field('email', 'Email', 'email'), field('phone', 'Phone number', 'tel'), field('comment', 'A few sentences about yourself', 'textarea')], 'Submit')
-    body = phead('Join a growing team with a love for food', 'Fill out this quick form with a few sentences about yourself.') + f'<section class="sec"><div class="wrap narrow"><h2>Apply today</h2><p><strong>Location:</strong> Heber City, {ADDR1}</p>{f}<p class="small">Have a resume? Email it to <a href="mailto:{EMAIL}">{EMAIL}</a>.</p></div></section>'
+    body = phead('Join a growing team with a love for food', 'Fill out this quick form with a few sentences about yourself.') + f'<section class="sec"><div class="wrap narrow"><h2>Apply today</h2><p><strong>Location:</strong> {addr('Heber City, ' + ADDR1)}</p>{f}<p class="small">Have a resume? Email it to <a href="mailto:{EMAIL}">{EMAIL}</a>.</p></div></section>'
     page('/careers', "We're Hiring at Lupita's Valley", 'Join our team and grow with us', body)
     # gift cards
     body = phead('Give the perfect gift for any occasion', "Give the gift of a delicious meal with our restaurant gift cards!") + f'<div class="ro-page"><div id="ro-gift"><p>Loading…</p></div></div><script src="/assets/ordering/guest-tools.js" defer></script>'
