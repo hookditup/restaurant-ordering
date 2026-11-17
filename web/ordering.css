@@ -81,3 +81,27 @@
 .ro-pair { display: flex; width: 100%; justify-content: space-between; gap: 1rem; align-items: center; min-height: 44px; padding: .4rem .7rem; margin-bottom: .35rem; border: 1px solid #8c8c8c; border-radius: 8px; background: #fff; color: var(--ro-ink); font: inherit; cursor: pointer; text-align: left; }
 .ro-address { border-top: 1px solid var(--ro-line); padding: .7rem 0; margin: 0; }
 @media (max-width: 768px) { .ro-items { grid-template-columns: 1fr; } .ro-jump { top: 64px; } .ro-cartbtn { bottom: 68px; } .ro-item img { width: 88px; height: 88px; } }
+/* Reservations calendar */
+.ro-res-step h2:focus, .ro-done:focus { outline: none; }
+.ro-res-step, .ro-res-step h2, .ro-done { scroll-margin-top: 110px; }
+.ro-party button { min-width: 52px; }
+.ro-hp { position: absolute; left: -9999px; }
+.ro-cal-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-bottom: .4rem; }
+.ro-cal-head h3 { margin: 0; font-size: 1.1rem; }
+.ro-cal-head button { width: 44px; height: 44px; border: 1px solid #8c8c8c; border-radius: 8px; background: #fff; font-size: 1.4rem; line-height: 1; cursor: pointer; color: var(--ro-ink); }
+.ro-cal-head button:disabled { opacity: .35; cursor: default; }
+.ro-week, .ro-days { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; text-align: center; }
+.ro-week span { font-size: .8rem; font-weight: 600; color: var(--ro-mute); padding: .25rem 0; }
+.ro-days > * { min-height: 44px; display: grid; place-items: center; border-radius: 8px; font: inherit; }
+.ro-days button { border: 1px solid var(--ro-accent); background: #fff; color: var(--ro-ink); font-weight: 600; cursor: pointer; }
+.ro-days button:hover { background: var(--ro-soft); }
+.ro-days button[aria-pressed="true"] { background: var(--ro-accent); color: #fff; }
+.ro-days .ro-off { color: #6b6b6b; text-decoration: line-through; }
+.ro-times { display: grid; grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr)); gap: .45rem; }
+.ro-times button { min-height: 48px; border: 1px solid #8c8c8c; border-radius: 8px; background: #fff; font: inherit; font-weight: 600; color: var(--ro-ink); cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: .35rem; }
+.ro-times button small { font-weight: 400; font-size: .75rem; color: var(--ro-accent); margin-top: .15rem; }
+.ro-times button[aria-pressed="true"] { background: var(--ro-accent); border-color: var(--ro-accent); color: #fff; }
+.ro-times button[aria-pressed="true"] small { color: #fff; }
+.ro-field textarea { resize: vertical; }
+.ro-pick { background: var(--ro-soft); border-radius: 8px; padding: .6rem .75rem; margin: 0 0 .5rem; }
+@media (max-width: 480px) { .ro-two { grid-template-columns: 1fr; } }

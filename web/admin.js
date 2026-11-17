@@ -11,7 +11,7 @@
     get() { try { return JSON.parse(localStorage.getItem(KEY)); } catch { return null; } },
     set(v) { try { v ? localStorage.setItem(KEY, JSON.stringify(v)) : localStorage.removeItem(KEY); } catch { /* signs in again next load */ } },
   };
-  let session = keep.get(), r = null, access = [], tab = 'dashboard', days = 30, menu = null;
+  let session = keep.get(), r = null, access = [], tab = 'dashboard', days = 30, menu = null, resDay = '';
   const ALL_TABS = [['dashboard', 'Dashboard'], ['orders', 'Orders'], ['reservations', 'Reservations'], ['messages', 'Messages'], ['rewards', 'Rewards'], ['gift', 'Gift cards'], ['menu', 'Menu'], ['choices', 'Choices'], ['pairs', 'Popular and pairings'], ['marketing', 'Marketing'], ['settings', 'Settings'], ['team', 'Team'], ['account', 'My login']];
   const SECTION_NAMES = { kitchen: 'Kitchen screen', dashboard: 'Dashboard', orders: 'Orders', reservations: 'Reservations', messages: 'Messages', rewards: 'Rewards', gift: 'Gift cards', menu: 'Menu', choices: 'Choices', pairs: 'Popular and pairings', settings: 'Settings', marketing: 'Marketing', team: 'Team' };
   const tabs = () => ALL_TABS.filter(([k]) => k === 'account' || r.perms.includes(k));
@@ -122,10 +122,68 @@
       };
     },
     async reservations() {
-      const { rows } = await staff('reservations');
-      view().innerHTML = `<p class="a-help">Confirming or declining emails the guest once email is connected.</p>${rows.map((x) => `<section class="a-box"><h2>${esc(x.res_date)} at ${esc(x.res_time)}</h2><p>${x.status === 'requested' ? '<strong>Needs reply</strong>' : 'Confirmed'}</p><p>${esc(x.name)} · party of ${esc(x.party_size)}<br><a href="tel:${esc(x.phone)}">${esc(x.phone)}</a> · ${esc(x.email)}${x.requests ? `<br>${esc(x.requests)}` : ''}</p>
-        <div class="a-btns">${x.status === 'requested' ? `<button data-r="${x.id}" data-m="confirm" aria-label="Confirm ${esc(x.name)}">Confirm</button><button class="a-alt" data-r="${x.id}" data-m="decline" aria-label="Decline ${esc(x.name)}">Decline</button>` : `<button class="a-alt" data-r="${x.id}" data-m="cancel" aria-label="Cancel ${esc(x.name)}">Cancel</button>`}</div></section>`).join('') || '<p>No upcoming reservations.</p>'}`;
-      view().querySelectorAll('[data-r]').forEach((b) => { b.onclick = () => attempt(async () => { await staff('reservation', { id: b.dataset.r, move: b.dataset.m }); await views.reservations(); }); });
+      const today = new Intl.DateTimeFormat('en-CA', { timeZone: r.timezone }).format(new Date());
+      if (!resDay) resDay = today;
+      const longDay = (d) => new Date(`${d}T12:00:00Z`).toLocaleDateString('en-US', { timeZone: 'UTC', weekday: 'long', month: 'long', day: 'numeric' });
+      const label = (m) => `${(Math.floor(m / 60) % 12) || 12}:${String(m % 60).padStart(2, '0')} ${m < 720 ? 'AM' : 'PM'}`;
+      const toMin = (v) => { const [h, m] = String(v).split(':').map(Number); return h * 60 + m; };
+      const [day, upcoming, [cfg2]] = await Promise.all([staff('reservations', { date: resDay }), staff('reservations'),
+        call(`restaurants?select=res_capacity,res_slot_minutes,res_dining_minutes,res_max_online,res_days_ahead,res_lead_minutes,res_last_seating_minutes,res_auto_confirm&id=eq.${r.id}`)]);
+      const asks = upcoming.rows.filter((x) => x.status === 'requested');
+      const card = (x) => `<section class="a-box"><h3>${esc(x.res_time)} · party of ${esc(x.guests ?? x.party_size)}${x.status === 'requested' ? ' · <strong>Needs reply</strong>' : ''}</h3>
+        <p>${esc(x.name)}<br><a href="tel:${esc(x.phone)}">${esc(x.phone)}</a> · ${esc(x.email)}${x.requests ? `<br>Note: ${esc(x.requests)}` : ''}</p>
+        <div class="a-btns">${x.status === 'requested' ? `<button data-r="${x.id}" data-m="confirm" aria-label="Confirm ${esc(x.name)}">Confirm</button><button class="a-alt" data-r="${x.id}" data-m="decline" aria-label="Decline ${esc(x.name)}">Decline</button>` : `<button class="a-alt" data-r="${x.id}" data-m="cancel" aria-label="Cancel ${esc(x.name)}">Cancel</button>`}</div></section>`;
+      const seated = day.rows.reduce((n, x) => n + (x.guests || 0), 0);
+      const free = new Map((day.slots || []).map((s) => [s.min, s.left]));
+      const byTime = new Map();
+      for (const x of day.rows) { const k = x.start_min ?? -1; byTime.set(k, [...(byTime.get(k) || []), x]); }
+      view().innerHTML = `
+        ${asks.length ? `<h2>Needs reply (${asks.length})</h2><p class="a-help">Large groups wait here until you confirm or decline. The guest gets an email either way once email is connected.</p>${asks.map((x) => card({ ...x, res_time: `${longDay(x.res_date)}, ${x.res_time}` })).join('')}` : ''}
+        <h2>Day view</h2>
+        <div class="a-form a-resnav"><button type="button" class="a-alt" data-day="-1">‹ Previous day</button>
+          <label>Date <input type="date" id="a-resday" value="${resDay}"></label>
+          <button type="button" class="a-alt" data-day="1">Next day ›</button>${resDay !== today ? '<button type="button" class="a-alt" data-day="0">Today</button>' : ''}</div>
+        <p><strong>${esc(longDay(resDay))}</strong>: ${day.rows.length} reservation${day.rows.length === 1 ? '' : 's'}, ${seated} guest${seated === 1 ? '' : 's'}. Room holds ${day.capacity} seats.</p>
+        ${(day.slots || []).length ? `<div class="a-scroll" tabindex="0" role="group" aria-label="Seats by time"><table class="a-table"><caption>Seats still open online</caption><thead><tr><th scope="col">Time</th><th scope="col">Seats left</th><th scope="col">Booked at this time</th></tr></thead><tbody>
+          ${day.slots.map((s) => `<tr><th scope="row">${esc(s.label)}</th><td>${s.left} of ${day.capacity}</td><td>${(byTime.get(s.min) || []).map((x) => `${esc(x.name)} (${x.guests})`).join(', ') || '—'}</td></tr>`).join('')}</tbody></table></div>`
+          : '<p class="a-help">No online times left for this day (closed, blocked, full, or already past).</p>'}
+        ${day.rows.length ? day.rows.map(card).join('') : '<p>No reservations this day.</p>'}
+        <h2>Blocked times</h2><p class="a-help">Block a whole day (holidays, private events) or part of a day. Guests can't book blocked times online. Existing reservations stay.</p>
+        ${day.blocks.map((b) => `<p>${b.start_min == null ? 'Whole day' : `${label(b.start_min)} to ${label(b.end_min)}`}${b.reason ? ` · ${esc(b.reason)}` : ''} <button type="button" class="a-alt" data-unblock="${b.id}">Remove</button></p>`).join('') || '<p>Nothing blocked on this day.</p>'}
+        <form class="a-form" id="a-block"><label>Date <input type="date" name="date" value="${resDay}" required></label>
+          <label class="a-check"><input type="checkbox" name="whole" checked> Whole day</label>
+          <label>From <input type="time" name="from" value="17:00" disabled></label><label>To <input type="time" name="to" value="21:00" disabled></label>
+          <label>Reason (staff only) <input name="reason" maxlength="200" placeholder="Thanksgiving, private party…"></label><button>Block</button></form>
+        <details class="a-box"><summary>Reservation settings</summary>
+          <form id="a-resset">
+            <label>Seats in the dining room <input type="number" name="res_capacity" min="1" max="1000" value="${cfg2.res_capacity}" required></label>
+            <label>Largest party that books instantly <input type="number" name="res_max_online" min="1" max="100" value="${cfg2.res_max_online}" required></label>
+            <label>Minutes a table is held <input type="number" name="res_dining_minutes" min="15" max="360" step="15" value="${cfg2.res_dining_minutes}" required></label>
+            <label>Time between start times (minutes) <select name="res_slot_minutes">${[15, 30, 60].map((n) => `<option${n === cfg2.res_slot_minutes ? ' selected' : ''}>${n}</option>`).join('')}</select></label>
+            <label>Book at least this many minutes ahead <input type="number" name="res_lead_minutes" min="0" max="2880" step="15" value="${cfg2.res_lead_minutes}" required></label>
+            <label>Last seating, minutes before close <input type="number" name="res_last_seating_minutes" min="0" max="240" step="15" value="${cfg2.res_last_seating_minutes}" required></label>
+            <label>Days ahead guests can book <input type="number" name="res_days_ahead" min="1" max="365" value="${cfg2.res_days_ahead}" required></label>
+            <label class="a-check"><input type="checkbox" name="res_auto_confirm"${cfg2.res_auto_confirm ? ' checked' : ''}> Confirm smaller parties instantly (off: every booking waits for you)</label>
+            <button>Save settings</button></form></details>`;
+      const v = view();
+      v.querySelectorAll('[data-r]').forEach((b) => { b.onclick = () => attempt(async () => { await staff('reservation', { id: b.dataset.r, move: b.dataset.m }); await views.reservations(); await counts(); }); });
+      v.querySelectorAll('[data-day]').forEach((b) => { b.onclick = () => { const n = +b.dataset.day; if (!n) resDay = today; else { const d = new Date(`${resDay}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + n); resDay = d.toISOString().slice(0, 10); } views.reservations(); }; });
+      v.querySelector('#a-resday').onchange = (e) => { if (e.target.value) { resDay = e.target.value; views.reservations(); } };
+      const bf = v.querySelector('#a-block');
+      bf.elements.whole.onchange = () => { bf.elements.from.disabled = bf.elements.to.disabled = bf.elements.whole.checked; };
+      bf.onsubmit = (e) => { e.preventDefault(); const f = bf.elements; attempt(async () => {
+        const whole = f.whole.checked, a = toMin(f.from.value), z = toMin(f.to.value);
+        if (!f.date.value) throw new Error('Pick a date.');
+        if (!whole && !(z > a)) throw new Error('The end time must be after the start time.');
+        await rpc('admin_res_block', { p_restaurant: r.id, p: { date: f.date.value, start_min: whole ? null : a, end_min: whole ? null : z, reason: f.reason.value } });
+        resDay = f.date.value; await views.reservations();
+      }, 'Blocked.'); };
+      v.querySelectorAll('[data-unblock]').forEach((b) => { b.onclick = () => attempt(async () => { await rpc('admin_res_block', { p_restaurant: r.id, p: { remove: b.dataset.unblock } }); await views.reservations(); }, 'Removed.'); });
+      v.querySelector('#a-resset').onsubmit = (e) => { e.preventDefault(); const f = e.target.elements; attempt(async () => {
+        const p = Object.fromEntries(['res_capacity', 'res_max_online', 'res_dining_minutes', 'res_slot_minutes', 'res_lead_minutes', 'res_last_seating_minutes', 'res_days_ahead'].map((k) => [k, Math.round(+f[k].value)]));
+        p.res_auto_confirm = f.res_auto_confirm.checked;
+        await rpc('admin_res_settings', { p_restaurant: r.id, p }); await views.reservations();
+      }, 'Settings saved.'); };
     },
     async messages() {
       const { rows } = await staff('messages');

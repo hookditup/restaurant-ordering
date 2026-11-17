@@ -34,3 +34,10 @@ button{min-height:44px;padding:0 1rem;border:0;border-radius:8px;background:#931
   .a-table{font-size:.86rem}.a-table th,.a-table td{padding:.4rem .35rem}.a-bar{width:22%}
   .a-box{padding:.7rem .8rem}.a-day legend{float:none;width:auto;padding:.4rem 0 0}
 }
+/* Reservations */
+.a-box h3{margin:.2rem 0 .4rem;font-size:1.05rem}
+#a-resset{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:.7rem;margin-top:.8rem;align-items:end}
+#a-resset label:not(.a-check){display:block}#a-resset input:not([type=checkbox]),#a-resset select{display:block;width:100%;margin-top:.25rem}
+#a-resset .a-check,#a-resset button{grid-column:1/-1;justify-self:start}
+.a-resnav{align-items:flex-end}.a-resnav label{flex:0 1 200px!important}
+details.a-box>summary{cursor:pointer;font-weight:700;min-height:32px}
