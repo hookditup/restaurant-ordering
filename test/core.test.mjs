@@ -137,3 +137,29 @@ test('delivery address is checked', () => {
   assert.throws(() => cleanAddress({ street: '1 A', city: 'Heber', zip: '12' }), /ZIP/);
   assert.throws(() => cleanAddress({ zip: '84032' }), /street/);
 });
+
+import { promoDiscount, windowsFor } from '../supabase/functions/ordering/core.js';
+
+test('promo codes: percent, amount, minimum, never more than the subtotal', () => {
+  assert.equal(promoDiscount({ kind: 'percent', value: 10, min_subtotal_cents: 0 }, 2599), 260);
+  assert.equal(promoDiscount({ kind: 'amount', value: 500, min_subtotal_cents: 2000 }, 1999), 0);
+  assert.equal(promoDiscount({ kind: 'amount', value: 500, min_subtotal_cents: 2000 }, 2000), 500);
+  assert.equal(promoDiscount({ kind: 'amount', value: 5000, min_subtotal_cents: 0 }, 1200), 1200);
+  assert.equal(promoDiscount(null, 1200), 0);
+});
+
+test('special hours: a closed day has no pickup times, shortened day stops early', () => {
+  const now = new Date('2026-11-25T17:00:00Z'); // Wed 10:00 MST
+  const closed = { ...r, exceptions: { '2026-11-26': { closed: true } } };
+  assert.ok(!pickupSlots(closed, now).some((t) => zoned(new Date(t), r.timezone).ymd === '2026-11-26'));
+  const short = { ...r, exceptions: { '2026-11-25': { closed: false, ranges: [['10:30', '14:00']] } } };
+  const today = pickupSlots(short, now).filter((t) => zoned(new Date(t), r.timezone).ymd === '2026-11-25');
+  assert.equal(zoned(new Date(today.at(-1)), r.timezone).minutes, 13 * 60 + 45);
+  assert.deepEqual(windowsFor(short, '2026-11-27', 'fri'), hours.fri);
+  assert.ok(!isOpenAt(hours, new Date('2026-11-26T19:00:00Z'), r.timezone, closed.exceptions));
+});
+
+test('cart lines keep the chosen option ids for reorder', () => {
+  const { option_ids } = priceLine(tacos, ['stk', 'noon']);
+  assert.deepEqual(option_ids.sort(), ['noon', 'stk']);
+});

@@ -11,9 +11,9 @@
     get() { try { return JSON.parse(localStorage.getItem(KEY)); } catch { return null; } },
     set(v) { try { v ? localStorage.setItem(KEY, JSON.stringify(v)) : localStorage.removeItem(KEY); } catch { /* signs in again next load */ } },
   };
-  let session = keep.get(), r = null, access = [], tab = 'dashboard', days = 30, menu = null, resDay = '';
-  const ALL_TABS = [['dashboard', 'Dashboard'], ['orders', 'Orders'], ['reservations', 'Reservations'], ['messages', 'Messages'], ['rewards', 'Rewards'], ['gift', 'Gift cards'], ['menu', 'Menu'], ['choices', 'Choices'], ['pairs', 'Popular and pairings'], ['marketing', 'Marketing'], ['settings', 'Settings'], ['team', 'Team'], ['account', 'My login']];
-  const SECTION_NAMES = { kitchen: 'Kitchen screen', dashboard: 'Dashboard', orders: 'Orders', reservations: 'Reservations', messages: 'Messages', rewards: 'Rewards', gift: 'Gift cards', menu: 'Menu', choices: 'Choices', pairs: 'Popular and pairings', settings: 'Settings', marketing: 'Marketing', team: 'Team' };
+  let session = keep.get(), r = null, access = [], tab = 'dashboard', days = 30, menu = null, resDay = '', cust = { q: '', seg: 'all', sort: 'last_order', offset: 0 };
+  const ALL_TABS = [['dashboard', 'Dashboard'], ['orders', 'Orders'], ['reservations', 'Reservations'], ['messages', 'Messages'], ['customers', 'Customers'], ['campaigns', 'Texts & emails'], ['rewards', 'Rewards'], ['gift', 'Gift cards'], ['menu', 'Menu'], ['choices', 'Choices'], ['pairs', 'Popular and pairings'], ['website', 'Website'], ['marketing', 'Marketing'], ['settings', 'Settings'], ['team', 'Team'], ['account', 'My login']];
+  const SECTION_NAMES = { kitchen: 'Kitchen screen', dashboard: 'Dashboard', orders: 'Orders', reservations: 'Reservations', messages: 'Messages', customers: 'Customers', campaigns: 'Texts and emails', website: 'Website notices and hours', rewards: 'Rewards', gift: 'Gift cards', menu: 'Menu', choices: 'Choices', pairs: 'Popular and pairings', settings: 'Settings', marketing: 'Marketing', team: 'Team' };
   const tabs = () => ALL_TABS.filter(([k]) => k === 'account' || r.perms.includes(k));
   const PICK = 'ro-admin-restaurant';
 
@@ -91,6 +91,244 @@
   const hourText = (h) => `${h % 12 || 12} ${h < 12 ? 'AM' : 'PM'}`;
   const WEEK = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
+
+  // A destructive button asks twice: the first press arms it, the second within 6 seconds does it.
+  const confirmStep = (form, label) => {
+    if (form.dataset.armed && Date.now() - +form.dataset.armed < 6000) { delete form.dataset.armed; return true; }
+    form.dataset.armed = String(Date.now()); say(label + ' Press again to confirm.', true); return false;
+  };
+  const csvCell = (v) => `"${String(v ?? '').replace(/"/g, '""').replace(/^([=+\-@])/, "'$1")}"`;
+  const download = (name, heads, rows) => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([[heads.map(csvCell).join(','), ...rows.map((x) => x.map(csvCell).join(','))].join('\n')], { type: 'text/csv' }));
+    a.download = name; a.click(); URL.revokeObjectURL(a.href);
+  };
+  const shortDate = (d) => (d ? new Date(d).toLocaleDateString('en-US', { timeZone: r.timezone, month: 'short', day: 'numeric', year: 'numeric' }) : '—');
+  const phoneText = (p) => { const d = String(p || '').replace(/\D/g, '').slice(-10); return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : (p || ''); };
+  const SEGMENTS = [['all', 'Everyone'], ['recent', 'Ordered in the last 30 days'], ['lapsed', "Haven't ordered in 45+ days"], ['regulars', 'Regulars (3+ orders)'], ['never_ordered', 'Never ordered online'], ['rewards', 'Rewards members'], ['birthday_month', 'Birthday this month']];
+  const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+  async function customersView() {
+    const d = await rpc('admin_customers', { p_restaurant: r.id, p: { q: cust.q, segment: { kind: cust.seg }, sort: cust.sort, limit: 50, offset: cust.offset } });
+    view().innerHTML = `<p class="a-help">Everyone who ordered online, booked a table or joined rewards, in one list. Totals count online orders only.</p>
+      <form class="a-form" id="a-cfind" role="search"><label>Search <input name="q" type="search" value="${esc(cust.q)}" placeholder="Name, phone or email"></label>
+        <label>Show <select name="seg">${SEGMENTS.map(([k, t]) => `<option value="${k}"${k === cust.seg ? ' selected' : ''}>${t}</option>`).join('')}</select></label>
+        <label>Sort <select name="sort">${[['last_order', 'Last order'], ['spent', 'Most spent'], ['orders', 'Most orders'], ['new', 'Newest'], ['name', 'Name']].map(([k, t]) => `<option value="${k}"${k === cust.sort ? ' selected' : ''}>${t}</option>`).join('')}</select></label>
+        <button>Search</button><button type="button" class="a-alt" id="a-cexport">Download CSV</button><button type="button" class="a-alt" id="a-cadd">Add a guest</button></form>
+      <div id="a-cform"></div>
+      <p><strong>${d.total}</strong> guest${d.total === 1 ? '' : 's'}</p>
+      <div class="a-scroll" tabindex="0" role="group" aria-label="Guests"><table class="a-table"><caption class="sr">Guests</caption><thead><tr><th scope="col">Guest</th><th scope="col">Phone</th><th scope="col">Orders</th><th scope="col">Spent</th><th scope="col">Last order</th><th scope="col">Can receive</th></tr></thead><tbody>
+      ${d.rows.map((c) => `<tr><th scope="row"><button class="a-link" data-c="${c.id}">${esc([c.first_name, c.last_name].filter(Boolean).join(' ') || c.email || phoneText(c.phone))}</button></th><td>${esc(phoneText(c.phone))}</td><td>${c.order_count}</td><td>${money(c.spent_cents)}</td><td>${shortDate(c.last_order_at)}</td>
+        <td>${[c.email_marketing && c.email ? 'Email' : '', c.sms_marketing && !c.sms_stopped_at ? 'Texts' : '', c.points != null ? `${c.points} pts` : ''].filter(Boolean).join(' · ') || '—'}</td></tr>`).join('') || '<tr><td colspan="6">No guests match.</td></tr>'}</tbody></table></div>
+      <div class="a-btns">${cust.offset ? '<button class="a-alt" data-page="-1">‹ Previous 50</button>' : ''}${cust.offset + 50 < d.total ? '<button class="a-alt" data-page="1">Next 50 ›</button>' : ''}</div>`;
+    const v = view(), f = v.querySelector('#a-cfind');
+    f.onsubmit = (e) => { e.preventDefault(); cust = { q: f.elements.q.value.trim(), seg: f.elements.seg.value, sort: f.elements.sort.value, offset: 0 }; customersView(); };
+    v.querySelectorAll('[data-page]').forEach((b) => { b.onclick = () => { cust.offset = Math.max(0, cust.offset + 50 * +b.dataset.page); customersView(); }; });
+    v.querySelectorAll('[data-c]').forEach((b) => { b.onclick = () => customerView(b.dataset.c); });
+    v.querySelector('#a-cexport').onclick = () => attempt(async () => {
+      const all = await rpc('admin_customers', { p_restaurant: r.id, p: { q: cust.q, segment: { kind: cust.seg }, sort: cust.sort, limit: 5000 } });
+      download('guests.csv', ['first_name', 'last_name', 'phone', 'email', 'orders', 'spent', 'first_order', 'last_order', 'reservations', 'no_shows', 'rewards_points', 'birthday', 'email_marketing', 'text_marketing', 'tags', 'source', 'added'],
+        all.rows.map((c) => [c.first_name, c.last_name, c.phone, c.email, c.order_count, (c.spent_cents / 100).toFixed(2), c.first_order_at, c.last_order_at, c.reservation_count, c.no_shows, c.points, c.birth_month ? `${c.birth_month}/${c.birth_day}` : '', c.email_marketing ? 'yes' : 'no', c.sms_marketing && !c.sms_stopped_at ? 'yes' : 'no', (c.tags || []).join('; '), c.source, c.created_at]));
+    }, 'Downloaded.');
+    v.querySelector('#a-cadd').onclick = () => {
+      v.querySelector('#a-cform').innerHTML = `<form class="a-box" id="a-cnew"><h3>Add a guest</h3><div class="a-grid2">
+        <label>First name <input name="first_name" required maxlength="40"></label><label>Last name <input name="last_name" maxlength="40"></label>
+        <label>Mobile phone <input name="phone" type="tel"></label><label>Email <input name="email" type="email"></label></div>
+        <label class="a-check"><input type="checkbox" name="sms"> The guest asked, in person or in writing, to get deals by text</label>
+        <label class="a-check"><input type="checkbox" name="em" checked> Send them marketing email (every email has an unsubscribe link)</label>
+        <div class="a-btns"><button>Add guest</button></div></form>`;
+      const nf = v.querySelector('#a-cnew'); nf.elements.first_name.focus();
+      nf.onsubmit = (e) => { e.preventDefault(); const x = nf.elements; attempt(async () => {
+        const digits = x.phone.value.replace(/\D/g, ''), phone = digits.length === 10 ? `+1${digits}` : digits.length === 11 && digits[0] === '1' ? `+${digits}` : '';
+        if (x.phone.value && !phone) throw new Error('Enter a 10-digit phone number.');
+        if (!phone && !x.email.value) throw new Error('Enter a phone number or email.');
+        const id = await rpc('admin_save_customer', { p_restaurant: r.id, p: { first_name: x.first_name.value, last_name: x.last_name.value, phone, email: x.email.value, sms_marketing: x.sms.checked, consent_confirmed: x.sms.checked, email_marketing: x.em.checked } });
+        await customerView(id);
+      }, 'Guest added.'); };
+    };
+  }
+
+  async function customerView(id) {
+    const d = await rpc('admin_customer', { p_restaurant: r.id, p_id: id });
+    const c = d.customer, name = [c.first_name, c.last_name].filter(Boolean).join(' ') || 'Guest';
+    const canText = c.phone && !c.sms_stopped_at && (c.sms_updates || c.sms_marketing);
+    view().innerHTML = `<p><button class="a-alt" id="a-cback">‹ All guests</button></p><h2>${esc(name)}</h2>
+      <div class="a-stats">${stat('Orders', c.order_count)}${stat('Spent online', money(c.spent_cents))}${stat('Last order', shortDate(c.last_order_at))}${stat('Reservations', c.reservation_count, c.no_shows ? `<small>${c.no_shows} no-show${c.no_shows === 1 ? '' : 's'}</small>` : '')}${d.rewards ? stat('Rewards points', d.rewards.points, `<small>Code ${esc(d.rewards.code)}</small>`) : ''}</div>
+      <form class="a-box" id="a-cedit"><h3>Details</h3><div class="a-grid2">
+        <label>First name <input name="first_name" value="${esc(c.first_name)}" maxlength="40"></label><label>Last name <input name="last_name" value="${esc(c.last_name)}" maxlength="40"></label>
+        <label>Phone <input value="${esc(phoneText(c.phone))}" disabled></label><label>Email <input name="email" type="email" value="${esc(c.email)}"></label>
+        <label>Birthday month <select name="birth_month"><option value="">—</option>${MONTHS.map((m, i) => `<option value="${i + 1}"${c.birth_month === i + 1 ? ' selected' : ''}>${m}</option>`).join('')}</select></label>
+        <label>Birthday day <input name="birth_day" type="number" min="1" max="31" value="${c.birth_day ?? ''}"></label></div>
+        <label>Tags (comma separated) <input name="tags" value="${esc((c.tags || []).join(', '))}" placeholder="VIP, catering, allergy: nuts"></label>
+        <label>Staff notes <textarea name="notes" rows="3" maxlength="2000">${esc(c.notes)}</textarea></label>
+        <fieldset><legend>Messages they get</legend>
+          <label class="a-check"><input type="checkbox" name="em"${c.email_marketing ? ' checked' : ''}> Marketing email${c.email_unsub_at ? ` (unsubscribed ${shortDate(c.email_unsub_at)})` : ''}</label>
+          <label class="a-check"><input type="checkbox" name="sms"${c.sms_marketing && !c.sms_stopped_at ? ' checked' : ''}> Marketing texts${c.sms_stopped_at ? ` (replied STOP ${shortDate(c.sms_stopped_at)})` : c.sms_marketing_at ? ` (agreed ${shortDate(c.sms_marketing_at)})` : ''}</label>
+          <label class="a-check" id="a-cconsent" hidden><input type="checkbox" name="consent"> The guest asked us to text them deals</label>
+          <p class="a-help">Order and reservation texts: ${c.sms_updates && !c.sms_stopped_at ? 'yes' : 'no'}. Only the guest can turn texts on, at checkout, rewards sign-up or by asking you.</p></fieldset>
+        <div class="a-btns"><button>Save</button></div></form>
+      <form class="a-box" id="a-cmsg"><h3>Send a message</h3><div class="a-grid2"><label>Send by <select name="channel">${c.email ? '<option value="email">Email</option>' : ''}${canText ? '<option value="sms">Text</option>' : ''}</select></label><label>Subject (email) <input name="subject" maxlength="200" placeholder="A note from ${esc(r.name)}"></label></div>
+        <label>Message <textarea name="body" rows="3" maxlength="1500" required></textarea></label><div class="a-btns"><button${!c.email && !canText ? ' disabled' : ''}>Send</button></div>${!c.email && !canText ? '<p class="a-help">No email on file and no permission to text. Call them instead.</p>' : ''}</form>
+      <h3>Online orders</h3>${d.orders.length ? `<ul class="a-list">${d.orders.map((o) => `<li><strong>${esc(o.order_no)}</strong> · ${shortDate(o.created_at)} · ${money(o.total_cents)} · ${esc(o.status)}<br><small>${esc(o.items || '')}</small></li>`).join('')}</ul>` : '<p>None yet.</p>'}
+      <h3>Reservations</h3>${d.reservations.length ? `<ul class="a-list">${d.reservations.map((x) => `<li>${esc(x.res_date)} at ${esc(x.res_time)} · party of ${esc(x.guests)} · ${esc(String(x.status).replace('_', '-'))}</li>`).join('')}</ul>` : '<p>None yet.</p>'}
+      <h3>Messages sent</h3>${d.messages.length ? `<ul class="a-list">${d.messages.map((m) => `<li>${shortDate(m.created_at)} · ${m.channel === 'sms' ? 'Text' : 'Email'} · ${esc(m.kind.replace('_', ' '))} · <strong>${esc(m.status)}</strong>${m.error ? ` (${esc(m.error)})` : ''}<br><small>${esc(m.subject ? `${m.subject}: ` : '')}${esc(m.body)}</small></li>`).join('')}</ul>` : '<p>None yet.</p>'}`;
+    const v = view(), f = v.querySelector('#a-cedit');
+    v.querySelector('#a-cback').onclick = () => customersView();
+    const wasSms = c.sms_marketing && !c.sms_stopped_at;
+    f.elements.sms.onchange = () => { v.querySelector('#a-cconsent').hidden = !f.elements.sms.checked || wasSms; };
+    f.onsubmit = (e) => { e.preventDefault(); const x = f.elements; attempt(async () => {
+      if (x.sms.checked && !wasSms && !x.consent.checked) throw new Error('Tick the box to confirm the guest asked for texts.');
+      await rpc('admin_save_customer', { p_restaurant: r.id, p: { id, first_name: x.first_name.value, last_name: x.last_name.value, email: x.email.value, birth_month: x.birth_month.value, birth_day: x.birth_day.value,
+        tags: x.tags.value.split(','), notes: x.notes.value, email_marketing: x.em.checked, sms_marketing: x.sms.checked, consent_confirmed: x.consent.checked } });
+      await customerView(id);
+    }); };
+    v.querySelector('#a-cmsg').onsubmit = (e) => { e.preventDefault(); const x = e.target.elements; attempt(async () => {
+      const res = await staff('message_customer', { id, channel: x.channel.value, subject: x.subject.value, body: x.body.value });
+      if (res.status !== 'sent') throw new Error(res.error || 'Not sent.');
+      await customerView(id);
+    }, 'Sent.'); };
+  }
+
+  const AUTO = {
+    order_ready: ['Order ready text', 'Texts the guest when the kitchen marks the order ready. Only for guests who ticked "text me order updates".', null],
+    reservation_reminder: ['Reservation reminder', 'Sent on the day, this many hours before the table time. Texts only go to guests who asked for a text reminder.', 'hours before'],
+    welcome: ['Rewards welcome text', 'Texts new rewards members who agreed to texts. (The welcome email always goes out.)', null],
+    winback: ['We miss you', "Goes to guests whose last online order was this many days ago. Each guest gets it at most once every 60 days.", 'days since last order'],
+    birthday: ['Birthday', 'Sent this many days before the birthday guests gave you.', 'days before birthday'],
+    review: ['Review request', 'Asks for a review this many hours after an order is completed. At most once a month per guest.', 'hours after the order'],
+    points: ['Reward waiting', 'Reminds rewards members who have enough points for a reward and haven\'t ordered in this many days.', 'days since last order'],
+  };
+  const FIELDS = '{first_name}, {restaurant}, {link}';
+
+  async function campaignsView() {
+    const d = await rpc('admin_marketing', { p_restaurant: r.id });
+    const st = d.settings || {};
+    const textsOn = st.twilio_sid && st.has_token && st.sms_from;
+    const segOpts = (cur) => SEGMENTS.map(([k, t]) => `<option value="${k}"${k === cur ? ' selected' : ''}>${t}</option>`).join('');
+    view().innerHTML = `
+      <div class="a-stats">${stat('Guests', d.audience.customers)}${stat('Can email', d.audience.email)}${stat('Can text', d.audience.sms)}${stat('Sent, 30 days', (d.sent30.sms || 0) + (d.sent30.email || 0), `<small>${d.sent30.sms || 0} texts · ${d.sent30.email || 0} emails${d.sent30.failed ? ` · ${d.sent30.failed} failed` : ''}${d.sent30.skipped ? ` · ${d.sent30.skipped} not sent` : ''}</small>`)}</div>
+      ${textsOn ? '' : '<p class="a-test">Texting isn\'t connected yet, so texts are saved as "not sent". Add the restaurant\'s Twilio details under Connections below.</p>'}
+      <h2>Automatic messages</h2><p class="a-help">These run on their own every few minutes. Marketing texts only go out between your texting hours and only to guests who opted in. Merge fields: ${FIELDS}, plus the ones noted.</p>
+      ${d.automations.map((a) => `<details class="a-box"><summary>${esc(AUTO[a.kind][0])} · <strong>${a.enabled ? 'On' : 'Off'}</strong></summary>
+        <form class="a-auto-f" data-kind="${a.kind}"><p class="a-help">${esc(AUTO[a.kind][1])}</p>
+          <label class="a-check"><input type="checkbox" name="enabled"${a.enabled ? ' checked' : ''}> On</label>
+          <div class="a-grid2"><label class="a-check"><input type="checkbox" name="sms"${a.sms ? ' checked' : ''}${a.kind === 'order_ready' ? '' : ''}> Text</label>${a.kind === 'order_ready' || a.kind === 'welcome' ? '' : `<label class="a-check"><input type="checkbox" name="email"${a.email ? ' checked' : ''}> Email</label>`}</div>
+          ${AUTO[a.kind][2] ? `<label>${esc(AUTO[a.kind][2])} <input type="number" name="wait" min="0" max="365" value="${a.wait}"></label>` : `<input type="hidden" name="wait" value="${a.wait}">`}
+          ${['winback', 'birthday'].includes(a.kind) ? `<label>Promo code to include (optional) <input name="promo_code" value="${esc(a.promo_code)}" maxlength="24" placeholder="WEMISSYOU"></label>` : ''}
+          ${a.kind === 'order_ready' || a.kind === 'welcome' ? '' : `<label>Email subject <input name="subject" value="${esc(a.subject)}" maxlength="200"></label><label>Email message <textarea name="body" rows="4" maxlength="5000">${esc(a.body)}</textarea></label>`}
+          <label>Text message <textarea name="sms_body" rows="2" maxlength="600">${esc(a.sms_body)}</textarea></label>
+          <p class="a-help">${{ order_ready: 'Also: {order_no}.', reservation_reminder: 'Also: {time}, {guests}, {cancel_link}.', welcome: 'Also: {code}.', winback: 'Also: {promo_line}.', birthday: 'Also: {promo_line}.', review: 'Also: {review_link}.', points: 'Also: {points}, {code}.' }[a.kind]} Marketing texts end with "Reply STOP to opt out."</p>
+          <div class="a-btns"><button>Save</button></div></form></details>`).join('')}
+      <h2>Send a campaign</h2>
+      <form class="a-box" id="a-camp"><div class="a-grid2"><label>Name (staff only) <input name="name" required maxlength="120" placeholder="Taco Tuesday"></label>
+        <label>Send to <select name="seg">${segOpts('all')}</select></label>
+        <label>Send by <select name="channel"><option value="email">Email</option><option value="sms">Text</option><option value="both">Email and text</option></select></label>
+        <label>When <input type="datetime-local" name="send_at"></label></div>
+        <p class="a-help" id="a-reach" aria-live="polite"></p>
+        <label>Email subject <input name="subject" maxlength="200"></label><label>Email message <textarea name="body" rows="5" maxlength="5000" placeholder="Hi {first_name}, ..."></textarea></label>
+        <label>Text message <textarea name="sms_body" rows="2" maxlength="600" placeholder="{restaurant}: ..."></textarea></label>
+        <p class="a-help">Leave "When" empty to send now. Only guests who agreed to marketing get it.</p>
+        <div class="a-btns"><button name="go" value="send">Send or schedule</button><button class="a-alt" name="go" value="draft">Save draft</button></div></form>
+      ${d.campaigns.length ? `<div class="a-scroll" tabindex="0" role="group" aria-label="Campaigns"><table class="a-table"><caption>Campaigns</caption><thead><tr><th scope="col">Name</th><th scope="col">By</th><th scope="col">Status</th><th scope="col">When</th><th scope="col">Messages</th><th scope="col"><span class="sr">Actions</span></th></tr></thead><tbody>
+        ${d.campaigns.map((c) => `<tr><th scope="row">${esc(c.name)}</th><td>${c.channel === 'both' ? 'Email + text' : c.channel === 'sms' ? 'Text' : 'Email'}</td><td>${esc(c.status)}</td><td>${shortDate(c.sent_at || c.send_at)}</td><td>${c.queued || '—'}</td>
+          <td>${['draft', 'scheduled'].includes(c.status) ? `<button class="a-alt" data-send="${c.id}">Send now</button> <button class="a-alt" data-cancel='${esc(JSON.stringify(c))}'>Cancel</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : ''}
+      <h2>Promo codes</h2>
+      <form class="a-form" id="a-promo"><label>Code <input name="code" required maxlength="24" placeholder="TACO10"></label><label>Type <select name="kind"><option value="percent">% off</option><option value="amount">$ off</option></select></label>
+        <label>Amount <input name="value" type="number" min="1" step="0.01" required></label><label>Minimum order ($) <input name="min" type="number" min="0" step="0.01" value="0"></label>
+        <label>Max uses <input name="max" type="number" min="1" placeholder="No limit"></label><label>Ends <input name="ends" type="date"></label>
+        <label class="a-check"><input type="checkbox" name="once" checked> Once per guest</label><button>Add code</button></form>
+      ${d.promos.length ? `<ul class="a-list">${d.promos.map((x) => `<li><strong>${esc(x.code)}</strong> · ${x.kind === 'percent' ? `${x.value}% off` : `${money(x.value)} off`}${x.min_subtotal_cents ? ` orders ${money(x.min_subtotal_cents)}+` : ''} · used ${x.uses}${x.max_uses ? ` of ${x.max_uses}` : ''}${x.ends_at ? ` · ends ${shortDate(x.ends_at)}` : ''} · ${x.active ? 'active' : 'off'} <button class="a-alt" data-promo="${x.id}" data-on="${!x.active}">${x.active ? 'Turn off' : 'Turn on'}</button></li>`).join('')}</ul>` : '<p>No codes yet.</p>'}
+      <h2>Connections</h2>
+      <details class="a-box"${textsOn ? '' : ' open'}><summary>Texting (Twilio) and email</summary>
+        <form id="a-msgset"><p class="a-help">Each restaurant uses its own Twilio account. Find these in the Twilio console under Account info. The auth token is stored encrypted and never shown again.</p>
+          <div class="a-grid2"><label>Account SID <input name="twilio_sid" value="${esc(st.twilio_sid)}" placeholder="AC…" autocomplete="off"></label>
+          <label>Auth token <input name="twilio_token" type="password" autocomplete="new-password" placeholder="${st.has_token ? 'Saved. Leave blank to keep it.' : '32 characters'}"></label>
+          <label>Texting number or Messaging Service <input name="sms_from" value="${esc(st.sms_from)}" placeholder="+14355551234 or MG…"></label>
+          <label>Send emails from <input name="email_from" value="${esc(st.email_from)}" placeholder="${esc(r.name)} &lt;hello@yourdomain.com&gt;"></label>
+          <label>Replies go to <input name="email_reply_to" type="email" value="${esc(st.email_reply_to)}"></label>
+          <label>Google review link <input name="review_url" value="${esc(st.review_url)}" placeholder="https://g.page/r/…"></label>
+          <label>Texts start at <input name="qs" type="time" value="${String(Math.floor((st.quiet_start_min ?? 540) / 60)).padStart(2, '0')}:${String((st.quiet_start_min ?? 540) % 60).padStart(2, '0')}"></label>
+          <label>Texts stop at <input name="qe" type="time" value="${String(Math.floor((st.quiet_end_min ?? 1200) / 60)).padStart(2, '0')}:${String((st.quiet_end_min ?? 1200) % 60).padStart(2, '0')}"></label></div>
+          <p class="a-help">In Twilio, set the number's "A message comes in" webhook to <code>${esc(cfg.url)}/functions/v1/ordering?hook=twilio&amp;r=${r.id}</code> so STOP, HELP and guest replies work.</p>
+          <div class="a-btns"><button>Save connections</button></div></form>
+        <form class="a-form" id="a-test"><label>Send a test to <input name="to" required placeholder="Your phone or email"></label><label>By <select name="channel"><option value="email">Email</option><option value="sms">Text</option></select></label><button class="a-alt">Send test</button></form></details>`;
+    const v = view();
+    v.querySelectorAll('.a-auto-f').forEach((f) => { f.onsubmit = (e) => { e.preventDefault(); const x = f.elements; attempt(async () => {
+      await rpc('admin_save_automation', { p_restaurant: r.id, p: { kind: f.dataset.kind, enabled: x.enabled.checked, sms: x.sms.checked, email: x.email ? x.email.checked : false, wait: +x.wait.value || 0,
+        subject: x.subject?.value ?? '', body: x.body?.value ?? (f.dataset.kind === 'order_ready' ? 'Your order is ready.' : 'Welcome!'), sms_body: x.sms_body.value, promo_code: x.promo_code?.value ?? '' } });
+      await campaignsView();
+    }); }; });
+    const cf = v.querySelector('#a-camp'), reach = v.querySelector('#a-reach');
+    const showReach = async () => { const n = await rpc('admin_segment_count', { p_restaurant: r.id, seg: { kind: cf.elements.seg.value } }).catch(() => null); if (n) reach.textContent = `Reaches ${n.email} by email and ${n.sms} by text (of ${n.all} guests in this group).`; };
+    cf.elements.seg.onchange = showReach; showReach();
+    let go = 'send';
+    cf.querySelectorAll('button[name=go]').forEach((b) => { b.onclick = () => { go = b.value; }; });
+    cf.onsubmit = (e) => { e.preventDefault(); const x = cf.elements; attempt(async () => {
+      const ch = x.channel.value;
+      if (ch !== 'sms' && (!x.subject.value.trim() || !x.body.value.trim())) throw new Error('Add an email subject and message.');
+      if (ch !== 'email' && !x.sms_body.value.trim()) throw new Error('Add the text message.');
+      const later = x.send_at.value ? new Date(x.send_at.value) : null;
+      if (go === 'send' && !later && !confirmStep(cf, 'Send this campaign now?')) throw new Error('Press Send again to confirm.');
+      const id = await rpc('admin_save_campaign', { p_restaurant: r.id, p_by: session?.user?.email || 'staff', p: { name: x.name.value, channel: ch, subject: x.subject.value, body: x.body.value, sms_body: x.sms_body.value,
+        segment: { kind: x.seg.value }, status: go === 'draft' ? 'draft' : 'scheduled', send_at: later ? later.toISOString() : '' } });
+      if (go === 'send' && !later) { const res = await staff('campaign_send', { id }); say(`Sent ${res.sent}. ${res.waiting ? `${res.waiting} texts wait for texting hours. ` : ''}${res.skipped ? `${res.skipped} not sent (not connected or no permission).` : ''}`); }
+      await campaignsView();
+    }, go === 'draft' ? 'Draft saved.' : 'Scheduled.'); };
+    v.querySelectorAll('[data-send]').forEach((b) => { b.onclick = () => attempt(async () => { const res = await staff('campaign_send', { id: b.dataset.send }); await campaignsView(); say(`Sent ${res.sent}.`); }); });
+    v.querySelectorAll('[data-cancel]').forEach((b) => { b.onclick = () => attempt(async () => { const c = JSON.parse(b.dataset.cancel); await rpc('admin_save_campaign', { p_restaurant: r.id, p_by: '', p: { ...c, status: 'cancelled' } }); await campaignsView(); }, 'Cancelled.'); });
+    const pf = v.querySelector('#a-promo');
+    pf.onsubmit = (e) => { e.preventDefault(); const x = pf.elements; attempt(async () => {
+      const pct = x.kind.value === 'percent', val = pct ? Math.round(+x.value.value) : toCents(x.value.value);
+      if (pct && (val < 1 || val > 100)) throw new Error('Percent off must be 1 to 100.');
+      await rpc('admin_save_promo', { p_restaurant: r.id, p: { code: x.code.value, kind: x.kind.value, value: val, min_subtotal_cents: toCents(x.min.value || 0), max_uses: x.max.value, once_per_guest: x.once.checked, ends_at: x.ends.value ? new Date(`${x.ends.value}T23:59:59`).toISOString() : '' } });
+      await campaignsView();
+    }, 'Code added.'); };
+    v.querySelectorAll('[data-promo]').forEach((b) => { b.onclick = () => attempt(async () => { await rpc('admin_save_promo', { p_restaurant: r.id, p: { id: b.dataset.promo, active: b.dataset.on === 'true' } }); await campaignsView(); }); });
+    const toMin = (t) => { const [h, m] = String(t || '').split(':').map(Number); return h * 60 + (m || 0); };
+    v.querySelector('#a-msgset').onsubmit = (e) => { e.preventDefault(); const x = e.target.elements; attempt(async () => {
+      await staff('msg_settings', { twilio_sid: x.twilio_sid.value.trim(), twilio_token: x.twilio_token.value.trim(), sms_from: x.sms_from.value.trim(), email_from: x.email_from.value.trim(), email_reply_to: x.email_reply_to.value.trim(), review_url: x.review_url.value.trim(), quiet_start_min: toMin(x.qs.value), quiet_end_min: toMin(x.qe.value) });
+      await campaignsView();
+    }); };
+    v.querySelector('#a-test').onsubmit = (e) => { e.preventDefault(); const x = e.target.elements; attempt(async () => {
+      const res = await staff('msg_test', { to: x.to.value, channel: x.channel.value });
+      if (res.status !== 'sent') throw new Error(res.error || 'Not sent.');
+    }, 'Test sent.'); };
+  }
+
+  async function websiteView() {
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: r.timezone }).format(new Date());
+    const [notices, ex] = await Promise.all([call(`site_notices?select=*&restaurant_id=eq.${r.id}&order=kind.asc,sort.asc,created_at.desc`), call(`hours_exceptions?select=*&restaurant_id=eq.${r.id}&day=gte.${today}&order=day.asc`)]);
+    const item = (n) => `<li><strong>${n.kind === 'banner' ? 'Banner' : 'Special'}: ${esc(n.title)}</strong>${n.body ? ` · ${esc(n.body)}` : ''}${n.starts_on || n.ends_on ? ` · ${esc(n.starts_on || 'now')} to ${esc(n.ends_on || 'no end')}` : ''} <button class="a-alt" data-rm="${n.id}" aria-label="Remove ${esc(n.title)}">Remove</button></li>`;
+    view().innerHTML = `<p class="a-help">Changes show on the website within a few minutes. No rebuild needed.</p>
+      <h2>Banner and specials</h2><p class="a-help">The banner shows at the top of every page (one at a time). Specials show on the home page.</p>
+      ${notices.length ? `<ul class="a-list">${notices.map(item).join('')}</ul>` : '<p>Nothing posted.</p>'}
+      <form class="a-box" id="a-notice"><div class="a-grid2"><label>Type <select name="kind"><option value="banner">Banner (every page)</option><option value="special">Special (home page)</option></select></label>
+        <label>Title <input name="title" required maxlength="120" placeholder="Taco Tuesday: $2 tacos"></label>
+        <label>Details (optional) <input name="body" maxlength="600"></label><label>Button text (optional) <input name="link_text" maxlength="40" placeholder="Order now"></label>
+        <label>Button link (optional) <input name="link_url" placeholder="/menu or https://…"></label><label>Show from <input name="starts_on" type="date"></label><label>Show until <input name="ends_on" type="date"></label></div>
+        <div class="a-btns"><button>Post</button></div></form>
+      <h2>Special hours and closures</h2><p class="a-help">Holidays, early closes and private events. Online ordering, reservations and the hours on the website all follow these. Special hours can shorten a day, not add a day you're normally closed.</p>
+      ${ex.length ? `<ul class="a-list">${ex.map((x) => `<li><strong>${esc(new Date(`${x.day}T12:00:00Z`).toLocaleDateString('en-US', { timeZone: 'UTC', weekday: 'long', month: 'long', day: 'numeric' }))}</strong>: ${x.closed ? 'Closed' : x.ranges.map(([a, b]) => `${a}–${b}`).join(', ')}${x.note ? ` · ${esc(x.note)}` : ''} <button class="a-alt" data-day="${x.day}">Remove</button></li>`).join('')}</ul>` : '<p>No special hours coming up.</p>'}
+      <form class="a-form" id="a-hours"><label>Date <input type="date" name="day" min="${today}" required></label><label class="a-check"><input type="checkbox" name="closed" checked> Closed all day</label>
+        <label>Open <input type="time" name="open" value="10:30" disabled></label><label>Close <input type="time" name="close" value="15:00" disabled></label>
+        <label>Note (shown to guests) <input name="note" maxlength="120" placeholder="Thanksgiving"></label><button>Save</button></form>`;
+    const v = view();
+    v.querySelector('#a-notice').onsubmit = (e) => { e.preventDefault(); const x = e.target.elements; attempt(async () => {
+      if (x.ends_on.value && x.starts_on.value && x.ends_on.value < x.starts_on.value) throw new Error('"Show until" is before "Show from".');
+      await rpc('admin_save_notice', { p_restaurant: r.id, p: { kind: x.kind.value, title: x.title.value, body: x.body.value, link_text: x.link_text.value, link_url: x.link_url.value.trim(), starts_on: x.starts_on.value, ends_on: x.ends_on.value } });
+      await websiteView();
+    }, 'Posted.'); };
+    v.querySelectorAll('[data-rm]').forEach((b) => { b.onclick = () => attempt(async () => { await rpc('admin_save_notice', { p_restaurant: r.id, p: { remove: b.dataset.rm } }); await websiteView(); }, 'Removed.'); });
+    const hf = v.querySelector('#a-hours');
+    hf.elements.closed.onchange = () => { hf.elements.open.disabled = hf.elements.close.disabled = hf.elements.closed.checked; };
+    hf.onsubmit = (e) => { e.preventDefault(); const x = hf.elements; attempt(async () => {
+      if (!x.closed.checked && !(x.close.value > x.open.value)) throw new Error('Closing time must be after opening time.');
+      await rpc('admin_save_hours_exception', { p_restaurant: r.id, p: { day: x.day.value, closed: x.closed.checked, ranges: x.closed.checked ? [] : [[x.open.value, x.close.value]], note: x.note.value } });
+      await websiteView();
+    }); };
+    v.querySelectorAll('[data-day]').forEach((b) => { b.onclick = () => attempt(async () => { await rpc('admin_save_hours_exception', { p_restaurant: r.id, p: { day: b.dataset.day, remove: true } }); await websiteView(); }, 'Removed.'); });
+  }
+
   const views = {
     async dashboard() {
       const s = await rpc('admin_stats', { p_restaurant: r.id, p_days: days });
@@ -111,7 +349,13 @@
     async orders() {
       const rows = await call(`orders?select=order_no,created_at,status,payment_status,fulfillment,first_name,last_name,subtotal_cents,tax_cents,tip_cents,delivery_fee_cents,total_cents,test_mode&restaurant_id=eq.${r.id}&order=created_at.desc&limit=200`);
       const when = (d) => new Date(d).toLocaleString('en-US', { timeZone: r.timezone, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-      view().innerHTML = `<p><button id="a-csv">Download CSV</button></p><div class="a-scroll" tabindex="0" role="group" aria-label="Orders table"><table class="a-table"><caption>Latest 200 orders</caption><thead><tr>${['Order', 'Placed', 'Guest', 'Type', 'Status', 'Payment', 'Total'].map((h) => `<th scope="col">${h}</th>`).join('')}</tr></thead><tbody>
+      const today = new Intl.DateTimeFormat('en-CA', { timeZone: r.timezone }).format(new Date());
+      const monthAgo = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+      view().innerHTML = `<p><button id="a-csv">Download orders CSV</button></p>
+        <details class="a-box"><summary>Refund an order</summary><p class="a-help">Refund part or all of an online payment. Gift card and rewards amounts aren't refunded to the card. The guest gets an email.</p>
+          <form class="a-form" id="a-refund"><label>Order number <input name="order_no" required autocomplete="off"></label><label>Amount ($) <input name="amount" type="number" min="0.01" step="0.01" required></label>
+          <label>Reason (shown to the guest) <input name="reason" maxlength="200" placeholder="Missing item"></label><button>Refund</button></form></details>
+        <details class="a-box"><summary>Sales by dish</summary><form class="a-form" id="a-items"><label>From <input type="date" name="from" value="${monthAgo}" required></label><label>To <input type="date" name="to" value="${today}" required></label><button>Show</button><button type="button" class="a-alt" id="a-items-csv">Download CSV</button></form><div id="a-items-out"></div></details><div class="a-scroll" tabindex="0" role="group" aria-label="Orders table"><table class="a-table"><caption>Latest 200 orders</caption><thead><tr>${['Order', 'Placed', 'Guest', 'Type', 'Status', 'Payment', 'Total'].map((h) => `<th scope="col">${h}</th>`).join('')}</tr></thead><tbody>
         ${rows.map((o) => `<tr><th scope="row">${esc(o.order_no)}</th><td>${esc(when(o.created_at))}</td><td>${esc(o.first_name)} ${esc(o.last_name)}</td><td>${esc(o.fulfillment)}</td><td>${esc(o.status.replace(/_/g, ' '))}</td><td>${esc(o.payment_status.replace(/_/g, ' '))}</td><td>${money(o.total_cents)}</td></tr>`).join('') || '<tr><td colspan="7">No orders yet.</td></tr>'}</tbody></table></div>`;
       view().querySelector('#a-csv').onclick = () => {
         const q = (v) => `"${String(v ?? '').replace(/"/g, '""').replace(/^([=+\-@])/, "'$1")}"`;
@@ -120,7 +364,27 @@
         a.href = URL.createObjectURL(new Blob([[heads.join(','), ...rows.map((o) => heads.map((h) => q(o[h])).join(','))].join('\n')], { type: 'text/csv' }));
         a.download = 'orders.csv'; a.click(); URL.revokeObjectURL(a.href);
       };
+      view().querySelector('#a-refund').onsubmit = (e) => { e.preventDefault(); const f = e.target.elements; attempt(async () => {
+        const cents = toCents(f.amount.value);
+        if (!confirmStep(e.target, `Refund ${money(cents)} on order ${f.order_no.value.trim()}?`)) throw new Error('Press Refund again to confirm.');
+        await staff('refund', { order_no: f.order_no.value.trim(), cents, reason: f.reason.value });
+        await views.orders();
+      }, 'Refunded.'); };
+      let itemRows = [];
+      const items = view().querySelector('#a-items');
+      items.onsubmit = (e) => { e.preventDefault(); attempt(async () => {
+        itemRows = await rpc('admin_item_sales', { p_restaurant: r.id, p_from: items.elements.from.value, p_to: items.elements.to.value });
+        view().querySelector('#a-items-out').innerHTML = `<div class="a-scroll" tabindex="0" role="group" aria-label="Sales by dish"><table class="a-table"><caption>Sales by dish</caption><thead><tr><th scope="col">Dish</th><th scope="col">Sold</th><th scope="col">Orders</th><th scope="col">Sales</th></tr></thead><tbody>
+          ${itemRows.map((x) => `<tr><th scope="row">${esc(x.name)}</th><td>${x.qty}</td><td>${x.orders}</td><td>${money(x.sales_cents)}</td></tr>`).join('') || '<tr><td colspan="4">No sales in these dates.</td></tr>'}</tbody></table></div>`;
+      }, 'Loaded.'); };
+      view().querySelector('#a-items-csv').onclick = () => attempt(async () => {
+        if (!itemRows.length) itemRows = await rpc('admin_item_sales', { p_restaurant: r.id, p_from: items.elements.from.value, p_to: items.elements.to.value });
+        download(`dish-sales-${items.elements.from.value}-to-${items.elements.to.value}.csv`, ['dish', 'quantity', 'orders', 'sales'], itemRows.map((x) => [x.name, x.qty, x.orders, (x.sales_cents / 100).toFixed(2)]));
+      }, 'Downloaded.');
     },
+    async customers() { await customersView(); },
+    async campaigns() { await campaignsView(); },
+    async website() { await websiteView(); },
     async reservations() {
       const today = new Intl.DateTimeFormat('en-CA', { timeZone: r.timezone }).format(new Date());
       if (!resDay) resDay = today;
@@ -132,7 +396,7 @@
       const asks = upcoming.rows.filter((x) => x.status === 'requested');
       const card = (x) => `<section class="a-box"><h3>${esc(x.res_time)} · party of ${esc(x.guests ?? x.party_size)}${x.status === 'requested' ? ' · <strong>Needs reply</strong>' : ''}</h3>
         <p>${esc(x.name)}<br><a href="tel:${esc(x.phone)}">${esc(x.phone)}</a> · ${esc(x.email)}${x.requests ? `<br>Note: ${esc(x.requests)}` : ''}</p>
-        <div class="a-btns">${x.status === 'requested' ? `<button data-r="${x.id}" data-m="confirm" aria-label="Confirm ${esc(x.name)}">Confirm</button><button class="a-alt" data-r="${x.id}" data-m="decline" aria-label="Decline ${esc(x.name)}">Decline</button>` : `<button class="a-alt" data-r="${x.id}" data-m="cancel" aria-label="Cancel ${esc(x.name)}">Cancel</button>`}</div></section>`;
+        <div class="a-btns">${x.status === 'requested' ? `<button data-r="${x.id}" data-m="confirm" aria-label="Confirm ${esc(x.name)}">Confirm</button><button class="a-alt" data-r="${x.id}" data-m="decline" aria-label="Decline ${esc(x.name)}">Decline</button>` : x.status === 'confirmed' ? `<button data-rs="${x.id}" data-m="seated" aria-label="Mark ${esc(x.name)} seated">Seated</button><button class="a-alt" data-rs="${x.id}" data-m="no_show" aria-label="Mark ${esc(x.name)} no-show">No-show</button><button class="a-alt" data-r="${x.id}" data-m="cancel" aria-label="Cancel ${esc(x.name)}">Cancel</button>` : `<span class="a-tag">${esc(x.status === 'no_show' ? 'No-show' : 'Seated')}</span>`}${x.sms_updates ? ' <span class="a-tag">Text reminder</span>' : ''}</div></section>`;
       const seated = day.rows.reduce((n, x) => n + (x.guests || 0), 0);
       const free = new Map((day.slots || []).map((s) => [s.min, s.left]));
       const byTime = new Map();
@@ -166,6 +430,7 @@
             <label class="a-check"><input type="checkbox" name="res_auto_confirm"${cfg2.res_auto_confirm ? ' checked' : ''}> Confirm smaller parties instantly (off: every booking waits for you)</label>
             <button>Save settings</button></form></details>`;
       const v = view();
+      v.querySelectorAll('[data-rs]').forEach((b) => { b.onclick = () => attempt(async () => { await staff('res_status', { id: b.dataset.rs, move: b.dataset.m }); await views.reservations(); }); });
       v.querySelectorAll('[data-r]').forEach((b) => { b.onclick = () => attempt(async () => { await staff('reservation', { id: b.dataset.r, move: b.dataset.m }); await views.reservations(); await counts(); }); });
       v.querySelectorAll('[data-day]').forEach((b) => { b.onclick = () => { const n = +b.dataset.day; if (!n) resDay = today; else { const d = new Date(`${resDay}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + n); resDay = d.toISOString().slice(0, 10); } views.reservations(); }; });
       v.querySelector('#a-resday').onchange = (e) => { if (e.target.value) { resDay = e.target.value; views.reservations(); } };

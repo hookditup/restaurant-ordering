@@ -166,7 +166,7 @@ create table public.automations (
 alter table public.automations enable row level security;
 create policy automations_staff_read on public.automations for select to authenticated using (public.can(restaurant_id, 'campaigns'));
 
-create table public.campaigns (
+create table public.msg_campaigns (
   id uuid primary key default gen_random_uuid(),
   restaurant_id uuid not null references public.restaurants(id) on delete cascade,
   name text not null, channel text not null check (channel in ('sms', 'email', 'both')),
@@ -176,8 +176,8 @@ create table public.campaigns (
   send_at timestamptz, queued int not null default 0,
   created_by text, created_at timestamptz not null default now(), sent_at timestamptz
 );
-alter table public.campaigns enable row level security;
-create policy campaigns_staff_read on public.campaigns for select to authenticated using (public.can(restaurant_id, 'campaigns'));
+alter table public.msg_campaigns enable row level security;
+create policy msg_campaigns_staff_read on public.msg_campaigns for select to authenticated using (public.can(restaurant_id, 'campaigns'));
 
 create table public.messages (
   id uuid primary key default gen_random_uuid(),
@@ -185,7 +185,7 @@ create table public.messages (
   customer_id uuid references public.customers(id) on delete set null,
   channel text not null check (channel in ('sms', 'email')),
   kind text not null,                       -- automation kind, 'campaign', or 'staff'
-  campaign_id uuid references public.campaigns(id) on delete set null,
+  campaign_id uuid references public.msg_campaigns(id) on delete set null,
   to_addr text not null, subject text, body text not null,
   marketing boolean not null default true,
   status text not null default 'queued' check (status in ('queued', 'sent', 'failed', 'skipped')),
@@ -258,9 +258,9 @@ $$;
 -- Put a campaign's messages in the send queue.
 create function public.campaign_queue(cid uuid) returns int
 language plpgsql security definer set search_path = '' as $$
-declare cp public.campaigns; r public.restaurants; n int := 0; k int;
+declare cp public.msg_campaigns; r public.restaurants; n int := 0; k int;
 begin
-  update public.campaigns set status = 'sending' where id = cid and status = 'scheduled' and coalesce(send_at, now()) <= now() returning * into cp;
+  update public.msg_campaigns set status = 'sending' where id = cid and status = 'scheduled' and coalesce(send_at, now()) <= now() returning * into cp;
   if cp.id is null then return 0; end if;
   select * into r from public.restaurants where id = cp.restaurant_id;
   if cp.channel in ('sms', 'both') then
@@ -277,7 +277,7 @@ begin
       on conflict do nothing;
     get diagnostics k = row_count; n := n + k;
   end if;
-  update public.campaigns set status = 'sent', queued = n, sent_at = now() where id = cp.id;
+  update public.msg_campaigns set status = 'sent', queued = n, sent_at = now() where id = cp.id;
   return n;
 end $$;
 
@@ -349,7 +349,7 @@ begin
     end if;
   end loop;
   -- Scheduled campaigns that are due.
-  perform public.campaign_queue(id) from public.campaigns where restaurant_id = rid and status = 'scheduled' and send_at <= now();
+  perform public.campaign_queue(id) from public.msg_campaigns where restaurant_id = rid and status = 'scheduled' and send_at <= now();
   return n;
 end $$;
 
@@ -502,7 +502,7 @@ begin
   if not public.can(p_restaurant, 'campaigns') then raise exception 'not allowed' using errcode = '42501'; end if;
   return jsonb_build_object(
     'automations', coalesce((select jsonb_agg(to_jsonb(a) order by array_position(array['order_ready', 'reservation_reminder', 'welcome', 'winback', 'birthday', 'review', 'points'], a.kind)) from public.automations a where a.restaurant_id = p_restaurant), '[]'),
-    'campaigns', coalesce((select jsonb_agg(to_jsonb(c) order by c.created_at desc) from (select * from public.campaigns where restaurant_id = p_restaurant order by created_at desc limit 50) c), '[]'),
+    'campaigns', coalesce((select jsonb_agg(to_jsonb(c) order by c.created_at desc) from (select * from public.msg_campaigns where restaurant_id = p_restaurant order by created_at desc limit 50) c), '[]'),
     'promos', coalesce((select jsonb_agg(to_jsonb(x) || jsonb_build_object('uses', (select count(*) from public.orders o where o.promo_code_id = x.id and o.status in ('new', 'accepted', 'ready', 'completed'))) order by x.created_at desc) from public.promo_codes x where x.restaurant_id = p_restaurant), '[]'),
     'audience', (select jsonb_build_object('customers', count(*), 'email', count(*) filter (where email_marketing and email is not null), 'sms', count(*) filter (where sms_marketing and phone is not null)) from public.customers where restaurant_id = p_restaurant),
     'sent30', (select jsonb_build_object('sms', count(*) filter (where channel = 'sms' and status = 'sent'), 'email', count(*) filter (where channel = 'email' and status = 'sent'),
@@ -538,12 +538,12 @@ begin
   if not public.can(p_restaurant, 'campaigns') then raise exception 'not allowed' using errcode = '42501'; end if;
   if st not in ('draft', 'scheduled', 'cancelled') then raise exception 'Unknown status.'; end if;
   if cid is null then
-    insert into public.campaigns (restaurant_id, name, channel, subject, body, sms_body, segment, status, send_at, created_by)
+    insert into public.msg_campaigns (restaurant_id, name, channel, subject, body, sms_body, segment, status, send_at, created_by)
       values (p_restaurant, left(p ->> 'name', 120), p ->> 'channel', left(coalesce(p ->> 'subject', ''), 200), left(coalesce(p ->> 'body', ''), 5000),
         left(coalesce(p ->> 'sms_body', ''), 600), coalesce(p -> 'segment', '{"kind":"all"}'), st, coalesce(nullif(p ->> 'send_at', '')::timestamptz, now()), p_by)
       returning id into cid;
   else
-    update public.campaigns set name = left(p ->> 'name', 120), channel = p ->> 'channel', subject = left(coalesce(p ->> 'subject', ''), 200),
+    update public.msg_campaigns set name = left(p ->> 'name', 120), channel = p ->> 'channel', subject = left(coalesce(p ->> 'subject', ''), 200),
       body = left(coalesce(p ->> 'body', ''), 5000), sms_body = left(coalesce(p ->> 'sms_body', ''), 600), segment = coalesce(p -> 'segment', segment),
       status = st, send_at = coalesce(nullif(p ->> 'send_at', '')::timestamptz, now())
     where id = cid and restaurant_id = p_restaurant and status in ('draft', 'scheduled');
@@ -636,9 +636,9 @@ revoke all on function public.admin_customers(uuid, jsonb), public.admin_custome
 grant execute on function public.admin_customers(uuid, jsonb), public.admin_customer(uuid, uuid), public.admin_save_customer(uuid, jsonb), public.admin_marketing(uuid),
   public.admin_segment_count(uuid, jsonb), public.admin_save_automation(uuid, jsonb), public.admin_save_campaign(uuid, jsonb, text), public.admin_save_promo(uuid, jsonb),
   public.admin_save_notice(uuid, jsonb), public.admin_save_hours_exception(uuid, jsonb), public.admin_item_sales(uuid, date, date) to authenticated;
-grant select on public.customers, public.automations, public.campaigns, public.messages, public.promo_codes to authenticated;
+grant select on public.customers, public.automations, public.msg_campaigns, public.messages, public.promo_codes to authenticated;
 grant select on public.site_notices, public.hours_exceptions to anon, authenticated;
-grant all on public.customers, public.messaging_settings, public.automations, public.campaigns, public.messages, public.promo_codes, public.site_notices,
+grant all on public.customers, public.messaging_settings, public.automations, public.msg_campaigns, public.messages, public.promo_codes, public.site_notices,
   public.hours_exceptions, public.refunds to service_role;
 
 -- New restaurants get default automations.

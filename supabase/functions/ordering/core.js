@@ -16,16 +16,23 @@ export function zoned(date, tz) {
 
 const toMin = (s) => { const [h, m] = s.split(':').map(Number); return h * 60 + m; };
 
-/** hours = {mon:[["10:30","21:00"]]}. End time is exclusive. */
-export function isOpenAt(hours, date, tz) {
+/** Opening windows for a local date: special hours win over the weekly hours. */
+export function windowsFor(restaurant, ymd, day) {
+  const ex = restaurant.exceptions?.[ymd];
+  if (ex) return ex.closed ? [] : ex.ranges ?? [];
+  return restaurant.hours?.[day] ?? [];
+}
+
+/** hours = {mon:[["10:30","21:00"]]}. End time is exclusive. Special hours (restaurant.exceptions) apply. */
+export function isOpenAt(hours, date, tz, exceptions) {
   const z = zoned(date, tz);
-  return (hours?.[z.day] ?? []).some(([a, b]) => z.minutes >= toMin(a) && z.minutes < toMin(b));
+  return windowsFor({ hours, exceptions }, z.ymd, z.day).some(([a, b]) => z.minutes >= toMin(a) && z.minutes < toMin(b));
 }
 
 /** A category with no hours of its own follows the restaurant. */
 export function categoryOpenAt(category, restaurant, date) {
   const tz = restaurant.timezone;
-  return isOpenAt(restaurant.hours, date, tz) && (!category.hours || isOpenAt(category.hours, date, tz));
+  return isOpenAt(restaurant.hours, date, tz, restaurant.exceptions) && (!category.hours || isOpenAt(category.hours, date, tz));
 }
 
 /** Convert a local date and minute-of-day in a time zone to a real instant. */
@@ -50,7 +57,7 @@ export function pickupSlots(restaurant, now = new Date(), days = 3) {
   for (let n = 0; n < days + 1 && out.length < 200; n++) {
     const z = zoned(new Date(now.getTime() + n * 86400000), tz);
     if (n === days) break;
-    for (const [a, b] of restaurant.hours?.[z.day] ?? []) {
+    for (const [a, b] of windowsFor(restaurant, z.ymd, z.day)) {
       for (let m = Math.ceil(toMin(a) / 15) * 15; m < toMin(b) - lastGap; m += 15) {
         const t = instantFor(z.ymd, m, tz);
         if (t.getTime() >= earliest) out.push(t.toISOString());
@@ -100,7 +107,7 @@ export function priceLine(item, selected) {
   for (const id of picked) {
     if (!known.has(id)) throw new OrderError(`A choice on ${item.name} isn't available.`);
   }
-  return { unit_cents: item.price_cents + extras, options };
+  return { unit_cents: item.price_cents + extras, options, option_ids: [...picked] };
 }
 
 /** Price a whole cart at a pickup time. Unavailable items stop the order. */
@@ -118,10 +125,10 @@ export function priceCart(menu, lines, pickupAt) {
     }
     const qty = Math.floor(Number(l.qty));
     if (!Number.isInteger(qty) || qty < 1 || qty > 50) throw new OrderError(`Check the quantity for ${hit.item.name}.`);
-    const { unit_cents, options } = priceLine(hit.item, l.options);
+    const { unit_cents, options, option_ids } = priceLine(hit.item, l.options);
     out.push({
       menu_item_id: hit.item.id, name: hit.item.name, qty, unit_price_cents: unit_cents,
-      line_total_cents: unit_cents * qty, options, note: String(l.note ?? '').replace(/[<>]/g, '').trim().slice(0, 200) || null,
+      line_total_cents: unit_cents * qty, options, option_ids, note: String(l.note ?? '').replace(/[<>]/g, '').trim().slice(0, 200) || null,
     });
   }
   return out;
@@ -136,6 +143,16 @@ export function totals(lines, restaurant, tipCents = 0, discountCents = 0, deliv
   const tax = Math.round((taxable + guest_fee) * restaurant.tax_rate_bps / 10000);
   const delivery = Math.max(0, Math.round(Number(deliveryCents) || 0));
   return { subtotal_cents: subtotal, discount_cents: discount, guest_fee_cents: guest_fee, tax_cents: tax, tip_cents: tip, delivery_fee_cents: delivery, total_cents: taxable + guest_fee + tax + tip + delivery };
+}
+
+/**
+ * Discount from a promo code on a subtotal (cents). Returns 0 when the code doesn't apply.
+ * promo: { kind: 'percent'|'amount', value, min_subtotal_cents }
+ */
+export function promoDiscount(promo, subtotalCents) {
+  if (!promo || subtotalCents < (promo.min_subtotal_cents ?? 0)) return 0;
+  const off = promo.kind === 'percent' ? Math.round(subtotalCents * Math.min(100, promo.value) / 100) : promo.value;
+  return Math.max(0, Math.min(off, subtotalCents));
 }
 
 /** How much of a total a gift card covers, and what is left to pay. */

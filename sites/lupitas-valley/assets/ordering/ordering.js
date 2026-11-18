@@ -87,6 +87,7 @@
       pickup = slots[0] || null;
       for (const c of menu.categories) for (const i of c.items) items.set(i.id, { item: i, category: c });
       cart = cart.filter((l) => items.has(l.id));
+      await reorderFromLink();
       render();
       // Photos and fonts can move the page while it loads, so settle on the section again.
       const goTo = () => document.getElementById(location.hash.slice(1))?.scrollIntoView({ behavior: 'instant' });
@@ -96,6 +97,30 @@
       /* keep the static menu already on the page */
     }
   }
+
+  // "Order again" links (/menu/?reorder=<order token>) refill the cart with what's still on the menu.
+  async function reorderFromLink() {
+    const t = new URLSearchParams(location.search).get('reorder');
+    if (!t) return;
+    history.replaceState(null, '', location.pathname + location.hash);
+    const r = await post({ action: 'status', token: t }).catch(() => null);
+    if (!r?.ok) return;
+    let missing = 0;
+    for (const i of r.order.items) {
+      if (!items.has(i.menu_item_id)) { missing++; continue; }
+      cart.push({ id: i.menu_item_id, qty: i.qty, options: i.option_ids || [], note: i.note || '' });
+    }
+    store.set(cart);
+    requestAnimationFrame(() => {
+      updateCartButton();
+      if (cart.length) openCart();
+      if (missing) dialog.querySelector('#ro-pay .ro-err')?.replaceChildren(`${missing} item${missing === 1 ? ' is' : 's are'} no longer on the menu and weren't added.`);
+    });
+  }
+
+  // "Remember me": name, phone and email stay on this device only.
+  const GUEST = `ro-guest-${cfg.restaurant}`;
+  const savedGuest = () => { try { return JSON.parse(localStorage.getItem(GUEST)) || null; } catch { return null; } };
 
   function render() {
     const cats = menu.categories.filter(catOpen);
@@ -305,17 +330,23 @@
           <label class="ro-field">Driver instructions<input name="instructions" maxlength="200" value="${esc(draft.instructions)}"></label>
           <button type="button" class="ro-apply" id="ro-fee">Get delivery fee</button></fieldset>` : ''}
         <label class="ro-field">Order note<input name="note" maxlength="300" value="${esc(draft.note)}"></label>
-        <details class="ro-credits"${draft.gift_code || draft.rewards_code ? ' open' : ''}><summary>Gift card or rewards code</summary>
+        <details class="ro-credits"${draft.gift_code || draft.rewards_code || draft.promo_code ? ' open' : ''}><summary>Promo, gift card or rewards code</summary>
+          <label class="ro-field">Promo code<input name="promo_code" autocomplete="off" value="${esc(draft.promo_code)}"></label>
           <label class="ro-field">Gift card code<input name="gift_code" autocomplete="off" value="${esc(draft.gift_code)}"></label>
           <label class="ro-field">Rewards code<input name="rewards_code" autocomplete="off" value="${esc(draft.rewards_code)}"></label>
           <button type="button" class="ro-apply" id="ro-apply">Apply</button></details>
+        <fieldset class="ro-consent"><legend class="ro-sr">Updates and offers</legend>
+          <label class="ro-consent-opt"><input type="checkbox" name="sms_updates"${draft.sms_updates ? ' checked' : ''}> Text me when my order is ready</label>
+          <label class="ro-consent-opt"><input type="checkbox" name="sms_marketing"${draft.sms_marketing ? ' checked' : ''}> Text me deals and rewards news from ${esc(menu.restaurant.name)}. Up to 4 msgs/month. Msg &amp; data rates may apply. Reply STOP to opt out, HELP for help. Not required to order.</label>
+          <label class="ro-consent-opt"><input type="checkbox" name="email_marketing"${draft.email_marketing === false ? '' : ' checked'}> Email me specials and rewards news. Unsubscribe anytime.</label>
+          <label class="ro-consent-opt"><input type="checkbox" name="remember"${draft.remember === false ? '' : ' checked'}> Remember my name, phone and email on this device</label></fieldset>
         <fieldset class="ro-tip"><legend>Tip</legend>${pct.map((p) => `<button type="button" data-tip="${p}"${tipPct === p ? ' aria-pressed="true"' : ''}>${p ? `${p}%` : 'None'}</button>`).join('')}</fieldset>
         <dl class="ro-sum" id="ro-sum"><dt>Subtotal</dt><dd>${money(sub)}</dd></dl>
         <p class="ro-err" role="alert"></p>
         <button class="ro-add" type="submit">${menu.restaurant.test_mode ? 'Place test order' : 'Continue to payment'}</button>
       </form></div>`;
     dialog.querySelector('.ro-x').onclick = close;
-    const keep = () => { const f = new FormData(dialog.querySelector('#ro-pay')); cartDraft = Object.fromEntries(f.entries()); };
+    const keep = () => { const f = dialog.querySelector('#ro-pay'); cartDraft = { ...Object.fromEntries(new FormData(f).entries()), sms_updates: f.elements.sms_updates.checked, sms_marketing: f.elements.sms_marketing.checked, email_marketing: f.elements.email_marketing.checked, remember: f.elements.remember.checked }; };
     dialog.querySelectorAll('[data-del]').forEach((b) => { b.onclick = () => { keep(); cart.splice(+b.dataset.del, 1); store.set(cart); updateCartButton(); cart.length ? openCart() : close(); }; });
     dialog.querySelectorAll('[data-edit]').forEach((b) => { b.onclick = () => { keep(); close(); openItem(cart[+b.dataset.edit].id, +b.dataset.edit); }; });
     dialog.querySelectorAll('[data-tip]').forEach((b) => { b.onclick = () => { keep(); tipPct = +b.dataset.tip; tip = Math.round(cartTotal() * tipPct / 100); openCart(); }; });
@@ -326,7 +357,7 @@
     if (!dialog.open) dialog.showModal();
     refreshTotals();
   }
-  let cartDraft = { first_name: '', last_name: '', phone: '', email: '', note: '', gift_code: '', rewards_code: '', street: '', unit: '', city: '', zip: '', instructions: '' };
+  let cartDraft = { first_name: '', last_name: '', phone: '', email: '', note: '', gift_code: '', rewards_code: '', promo_code: '', street: '', unit: '', city: '', zip: '', instructions: '', ...(savedGuest() || {}) };
   const addressFrom = (val) => ({ street: val('street'), unit: val('unit'), city: val('city'), zip: val('zip'), instructions: val('instructions') });
 
   async function refreshTotals() {
@@ -334,13 +365,13 @@
     const form = dialog.querySelector('#ro-pay');
     const val = (n) => form?.elements[n]?.value.trim() || undefined;
     const haveAddress = fulfillment === 'delivery' && val('street') && val('city') && val('zip');
-    const r = await post({ action: 'quote', pickup_at: pickup, tip_cents: tip, items: cart, phone: val('phone'), gift_code: val('gift_code'), rewards_code: val('rewards_code'), ...(haveAddress ? { fulfillment, address: addressFrom(val) } : {}) }).catch(() => null);
+    const r = await post({ action: 'quote', pickup_at: pickup, tip_cents: tip, items: cart, phone: val('phone'), gift_code: val('gift_code'), rewards_code: val('rewards_code'), promo_code: val('promo_code'), ...(haveAddress ? { fulfillment, address: addressFrom(val) } : {}) }).catch(() => null);
     const box = dialog.querySelector('#ro-sum');
     if (!box) return;
     const msg = dialog.querySelector('#ro-pay .ro-err');
     if (!r?.ok) { msg.textContent = r?.error || 'Could not price your order.'; return; }
     msg.textContent = '';
-    box.innerHTML = `<dt>Subtotal</dt><dd>${money(r.subtotal_cents)}</dd>${r.discount_cents ? `<dt>Rewards</dt><dd>−${money(r.discount_cents)}</dd>` : ''}${r.guest_fee_cents ? `<dt>Service fee</dt><dd>${money(r.guest_fee_cents)}</dd>` : ''}${r.delivery_fee_cents ? `<dt>Delivery</dt><dd>${money(r.delivery_fee_cents)}</dd>` : ''}
+    box.innerHTML = `<dt>Subtotal</dt><dd>${money(r.subtotal_cents)}</dd>${r.discount_cents - (r.promo_cents || 0) ? `<dt>Rewards</dt><dd>−${money(r.discount_cents - (r.promo_cents || 0))}</dd>` : ''}${r.promo_cents ? `<dt>Promo ${esc(r.promo_code || '')}</dt><dd>−${money(r.promo_cents)}</dd>` : ''}${r.guest_fee_cents ? `<dt>Service fee</dt><dd>${money(r.guest_fee_cents)}</dd>` : ''}${r.delivery_fee_cents ? `<dt>Delivery</dt><dd>${money(r.delivery_fee_cents)}</dd>` : ''}
       <dt>Tax</dt><dd>${money(r.tax_cents)}</dd>${r.tip_cents ? `<dt>Tip</dt><dd>${money(r.tip_cents)}</dd>` : ''}<dt class="ro-total">Total</dt><dd class="ro-total">${money(r.total_cents)}</dd>${r.gift_applied_cents ? `<dt>Gift card</dt><dd>−${money(r.gift_applied_cents)}</dd><dt class="ro-total">Amount due</dt><dd class="ro-total">${money(r.amount_due_cents)}</dd>` : ''}`;
   }
 
@@ -350,9 +381,12 @@
     const guest = Object.fromEntries(new FormData(f).entries());
     err.textContent = '';
     btn.disabled = true;
-    const { gift_code, rewards_code } = guest;
+    const { gift_code, rewards_code, promo_code } = guest;
     const val = (n) => String(guest[n] ?? '').trim();
-    const r = await post({ action: 'checkout', pickup_at: pickup, tip_cents: tip, items: cart, guest, gift_code, rewards_code, fulfillment, address: fulfillment === 'delivery' ? addressFrom(val) : undefined, return_url: location.origin, attribution: window.HRA ? window.HRA.get() : undefined }).catch(() => null);
+    const consent = { sms_updates: f.elements.sms_updates.checked, sms_marketing: f.elements.sms_marketing.checked, email_marketing: f.elements.email_marketing.checked };
+    try { if (f.elements.remember.checked) localStorage.setItem(GUEST, JSON.stringify({ first_name: val('first_name'), last_name: val('last_name'), phone: val('phone'), email: val('email') })); else localStorage.removeItem(GUEST); } catch { /* not saved on this device */ }
+    for (const k of ['sms_updates', 'sms_marketing', 'email_marketing', 'remember', 'promo_code']) delete guest[k];
+    const r = await post({ action: 'checkout', pickup_at: pickup, tip_cents: tip, items: cart, guest, gift_code, rewards_code, promo_code, consent, fulfillment, address: fulfillment === 'delivery' ? addressFrom(val) : undefined, return_url: location.origin, attribution: window.HRA ? window.HRA.get() : undefined }).catch(() => null);
     if (!r?.ok) { err.textContent = r?.error || 'Something went wrong. Please try again or call us.'; btn.disabled = false; return; }
     cart = []; store.set(cart);
     location.href = r.test ? `/order/?t=${r.token}` : r.redirect;
