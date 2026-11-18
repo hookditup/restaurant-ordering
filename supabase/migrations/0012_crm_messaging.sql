@@ -137,30 +137,8 @@ create trigger reservations_customer_stats after insert or update of status on p
 create trigger rewards_customer before insert or update of sms_consent on public.rewards_accounts for each row execute function public.tg_rewards_customer();
 
 -- Reservations: seated and no-show.
-alter table public.reservations drop constraint reservations_status_check;
-alter table public.reservations add constraint reservations_status_check check (status in ('requested', 'confirmed', 'declined', 'cancelled', 'seated', 'no_show'));
 alter table public.reservations add column sms_updates boolean not null default false, add column reminded_at timestamptz;
--- Seated guests still hold their seats; reservation tools follow the Reservations permission.
-do $$
-declare f text;
-begin
-  foreach f in array array['public.res_day(uuid,date)', 'public.res_month(uuid,date,integer)', 'public.staff_res_day(uuid,date)'] loop
-    execute replace(pg_get_functiondef(f::regprocedure), 'status in (''requested'', ''confirmed'')', 'status in (''requested'', ''confirmed'', ''seated'')');
-  end loop;
-  foreach f in array array['public.admin_res_settings(uuid,jsonb)', 'public.admin_res_block(uuid,jsonb)'] loop
-    execute replace(pg_get_functiondef(f::regprocedure), 'public.is_manager(p_restaurant)', 'public.can(p_restaurant, ''reservations'')');
-  end loop;
-end $$;
 
--- Backfill: link what we already have, oldest first.
-update public.rewards_accounts set customer_id = public.upsert_customer(restaurant_id, jsonb_build_object('phone', phone, 'email', email,
-  'first_name', split_part(name, ' ', 1), 'last_name', nullif(regexp_replace(name, '^\S+\s*', ''), ''), 'sms_marketing', sms_consent, 'source', 'rewards'))
-  where customer_id is null;
-update public.orders set customer_id = public.upsert_customer(restaurant_id, jsonb_build_object('phone', phone, 'email', email,
-  'first_name', first_name, 'last_name', last_name, 'source', 'online order')) where customer_id is null;
-update public.reservations set customer_id = public.upsert_customer(restaurant_id, jsonb_build_object('phone', phone, 'email', email,
-  'first_name', split_part(name, ' ', 1), 'last_name', nullif(regexp_replace(name, '^\S+\s*', ''), ''), 'source', 'reservation')) where customer_id is null;
-select public.refresh_customer(id) from public.customers;
 
 -- ---------- messaging ----------
 create table public.messaging_settings (
@@ -434,8 +412,6 @@ alter table public.hours_exceptions enable row level security;
 create policy hours_ex_public_read on public.hours_exceptions for select to anon, authenticated using (true);
 
 -- ---------- refunds and per-item exports ----------
-alter table public.orders drop constraint orders_payment_status_check;
-alter table public.orders add constraint orders_payment_status_check check (payment_status in ('unpaid', 'paid', 'test_paid', 'gift_card', 'refunded', 'partly_refunded', 'failed'));
 alter table public.orders add column refunded_cents int not null default 0, add column sms_updates boolean not null default false;
 create table public.refunds (
   id uuid primary key default gen_random_uuid(),
@@ -447,9 +423,6 @@ alter table public.refunds enable row level security;
 alter table public.order_items add column option_ids uuid[];
 
 -- ---------- staff functions ----------
--- New admin sections for existing owner and manager logins.
-update public.staff set permissions = array(select distinct unnest(permissions || array['customers', 'campaigns', 'website']))
-  where role in ('owner', 'manager');
 
 create function public.admin_customers(p_restaurant uuid, p jsonb) returns jsonb
 language plpgsql stable security definer set search_path = '' as $$
