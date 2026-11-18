@@ -115,7 +115,7 @@ def card(i):
 def cat_of(i): return next(c['name'] for c in CATS if i in c['items'])
 def feat(n):
     i = BY[n]
-    pic = img(i['img'], n, 400, 300) if i['img'] else '<span class="feat-noimg" aria-hidden="true"></span>'
+    pic = img(i['img'], '', 400, 300) if i['img'] else '<span class="feat-noimg" aria-hidden="true"></span>'  # name is shown right below
     return f'<a class="feat" href="/menu#{cid(cat_of(i))}">{pic}<span>{e(n)}</span></a>'
 def location_block():
     hours = ''.join(f'<li><span>{d}</span><span>{t}</span></li>' for d, t in HOURS)

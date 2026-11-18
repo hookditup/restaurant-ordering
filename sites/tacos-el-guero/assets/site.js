@@ -162,7 +162,7 @@
         if (feats && m.popular.length) {
           feats.innerHTML = m.popular.filter(function (n) { return byName[n]; }).map(function (n) {
             var h = byName[n], i = h.item;
-            return '<a class="feat" href="/menu#' + slug(h.cat) + '">' + (i.image ? '<img src="' + clean(i.image) + '" alt="' + clean(i.name) + '" width="400" height="300" loading="lazy" decoding="async">' : '<i class="feat-noimg"></i>') + '<span>' + clean(i.name) + '</span></a>';
+            return '<a class="feat" href="/menu#' + slug(h.cat) + '">' + (i.image ? '<img src="' + clean(i.image) + '" alt="" width="400" height="300" loading="lazy" decoding="async">' : '<i class="feat-noimg"></i>') + '<span>' + clean(i.name) + '</span></a>';
           }).join('');
         }
         cards.forEach(function (card) {
