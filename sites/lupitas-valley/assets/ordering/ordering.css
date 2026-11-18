@@ -131,3 +131,9 @@
 .ro-done { text-align: center; padding: 2rem 1.1rem; }
 .ro-check { width: 56px; height: 56px; margin: 0 auto .5rem; border-radius: 50%; background: #14652d; color: #fff; font-size: 1.8rem; display: grid; place-items: center; }
 @media (prefers-reduced-motion: no-preference) { .ro-step-body { animation: ro-in .18s ease-out; } @keyframes ro-in { from { opacity: 0; transform: translateX(8px); } to { opacity: 1; transform: none; } } }
+/* Checkout opt-ins, reorder */
+.ro-consent { border: 0; padding: 0; margin: .6rem 0; display: grid; gap: .45rem; }
+.ro-consent-opt { display: flex; gap: .55rem; align-items: flex-start; font-size: .92rem; line-height: 1.4; color: var(--ro-ink); }
+.ro-consent-opt input { width: 1.2rem; height: 1.2rem; margin: .1rem 0 0; flex: none; accent-color: var(--ro-accent); }
+.ro-again { margin-top: 1.2rem; }
+.ro-again .ro-add { display: inline-flex; text-decoration: none; }

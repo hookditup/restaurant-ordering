@@ -148,10 +148,11 @@
         <div class="ro-two"><label class="ro-field">Email<input name="email" type="email" autocomplete="email" required value="${esc(w.email)}"></label>
         <label class="ro-field">Phone<input name="phone" type="tel" autocomplete="tel" required value="${esc(w.phone)}"></label></div>
         <label class="ro-field">Special requests (optional)<textarea name="requests" rows="3" maxlength="500" placeholder="High chair, birthday, booth if possible…">${esc(w.requests)}</textarea></label>
+        <label class="ro-consent-opt"><input type="checkbox" name="sms_updates"${w.sms_updates ? ' checked' : ''}> Text me a reminder on the day. Msg &amp; data rates may apply. Reply STOP to opt out.</label>
         <p class="ro-err" role="alert"></p><button class="ro-add" type="submit">${large() ? 'Send request' : 'Book table'}</button>
       </form>`);
     const f = b.querySelector('form');
-    f.addEventListener('input', () => { st.who = Object.fromEntries(new FormData(f).entries()); }); // kept if the guest goes back
+    f.addEventListener('input', () => { st.who = { ...Object.fromEntries(new FormData(f).entries()), sms_updates: f.elements.sms_updates.checked }; }); // kept if the guest goes back
     f.addEventListener('submit', book);
   }
 
@@ -164,7 +165,7 @@
     btn.disabled = true; btn.textContent = 'Booking…';
     const v = Object.fromEntries(new FormData(f).entries());
     const r = await post({ action: 'form', form: 'reservation', page: location.pathname, website: v.website,
-      data: { name: v.name, email: v.email, phone: v.phone, requests: v.requests, date: st.date, start_min: st.min, guests: st.guests },
+      data: { name: v.name, email: v.email, phone: v.phone, requests: v.requests, date: st.date, start_min: st.min, guests: st.guests, sms_updates: f.elements.sms_updates.checked ? 'yes' : '' },
       attribution: window.HRA ? window.HRA.get() : undefined });
     if (!r.ok) {
       btn.disabled = false; btn.textContent = label;

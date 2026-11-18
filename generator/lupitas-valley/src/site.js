@@ -220,3 +220,56 @@
     });
   });
 })();
+
+/* Banner, specials and special hours from the admin's Website tab. Cached for 5 minutes per visitor. */
+(function () {
+  var ro = window.RO;
+  if (!ro || /^\/(kitchen|admin)(\/|$)/.test(location.pathname)) return;
+  var KEY = 'lv-site-info', box = document.getElementById('main');
+  var clean = function (t) { var d = document.createElement('div'); d.textContent = t == null ? '' : t; return d.innerHTML; };
+  var safeUrl = function (u) { return /^(https:\/\/|\/(?!\/))/.test(u || '') ? u.replace(/"/g, '%22') : ''; };
+  var t12 = function (s) { var p = s.split(':'), h = +p[0], m = p[1]; return (h % 12 || 12) + (m === '00' ? '' : ':' + m) + (h < 12 ? ' AM' : ' PM'); };
+  function show(d) {
+    if (!d || !d.ok) return;
+    if (d.banner && box) {
+      var b = document.createElement('div');
+      b.className = 'site-banner'; b.setAttribute('role', 'region'); b.setAttribute('aria-label', 'Announcement');
+      var link = safeUrl(d.banner.link_url);
+      b.innerHTML = '<div class="wrap"><p><strong>' + clean(d.banner.title) + '</strong>' + (d.banner.body ? ' ' + clean(d.banner.body) : '') +
+        (link ? ' <a href="' + link + '">' + clean(d.banner.link_text || 'Learn more') + '</a>' : '') + '</p></div>';
+      box.insertBefore(b, box.firstChild);
+    }
+    var sp = document.querySelector('[data-specials]');
+    if (sp && d.specials && d.specials.length) {
+      sp.querySelector('.specials-list').innerHTML = d.specials.map(function (s) {
+        var link = safeUrl(s.link_url);
+        return '<article class="special"><h3>' + clean(s.title) + '</h3>' + (s.body ? '<p>' + clean(s.body) + '</p>' : '') + (link ? '<a class="btn sm" href="' + link + '">' + clean(s.link_text || 'Learn more') + '</a>' : '') + '</article>';
+      }).join('');
+      sp.hidden = false;
+    }
+    var today = d.days && d.days[0];
+    if (today && today.special) document.querySelectorAll('[data-today]').forEach(function (el) {
+      el.textContent = 'Today (' + today.special + '): ' + (today.ranges.length ? today.ranges.map(function (r) { return t12(r[0]) + ' - ' + t12(r[1]); }).join(', ') : 'Closed');
+    });
+    var upcoming = (d.days || []).filter(function (x) { return x.special; });
+    if (upcoming.length) document.querySelectorAll('ul.hours').forEach(function (ul) {
+      var n = document.createElement('p');
+      n.className = 'hours-note';
+      n.innerHTML = '<strong>Special hours:</strong> ' + upcoming.map(function (x) {
+        var day = new Date(x.date + 'T12:00:00Z').toLocaleDateString('en-US', { timeZone: 'UTC', weekday: 'short', month: 'short', day: 'numeric' });
+        return clean(day + ', ' + x.special + ': ' + (x.ranges.length ? x.ranges.map(function (r) { return t12(r[0]) + '-' + t12(r[1]); }).join(', ') : 'closed'));
+      }).join('; ');
+      ul.parentNode.insertBefore(n, ul);
+    });
+  }
+  try { var c = JSON.parse(sessionStorage.getItem(KEY)); if (c && Date.now() - c.at < 300000) return show(c.d); } catch (e) { /* fetch fresh */ }
+  fetch(ro.url + '/functions/v1/ordering', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'site_info', restaurant: ro.restaurant }) })
+    .then(function (r) { return r.json(); })
+    .then(function (d) { try { sessionStorage.setItem(KEY, JSON.stringify({ at: Date.now(), d: d })); } catch (e) { /* fine */ } show(d); })
+    .catch(function () { /* the page works without it */ });
+})();
+
+/* Installable app: offline fallback only. Menu, ordering and payments always come from the network. */
+if ('serviceWorker' in navigator && !/^\/(kitchen|admin)(\/|$)/.test(location.pathname)) {
+  window.addEventListener('load', function () { navigator.serviceWorker.register('/sw.js').catch(function () { /* fine */ }); });
+}

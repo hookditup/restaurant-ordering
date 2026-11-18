@@ -14,7 +14,7 @@
 //   DOORDASH_DEVELOPER_ID, DOORDASH_KEY_ID, DOORDASH_SIGNING_SECRET (DoorDash Drive),
 //   ATTRIBUTION_URL + ATTRIBUTION_KEYS (marketing attribution; JSON map of restaurant slug -> API key).
 // With no Stripe key, a restaurant in test mode marks orders as test-paid. Live mode never does.
-import { addressLine, applyGift, cleanAddress, cleanCode, cleanGuest, makeCode, NEXT, normPhone, OrderError, pickupSlots, priceCart, totals, validPickup } from './core.js';
+import { addressLine, applyGift, cleanAddress, cleanCode, cleanGuest, makeCode, NEXT, normPhone, OrderError, pickupSlots, priceCart, promoDiscount, totals, validPickup, windowsFor } from './core.js';
 
 const SB_URL = Deno.env.get('SUPABASE_URL')!;
 const SB_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -25,6 +25,7 @@ const FROM = Deno.env.get('EMAIL_FROM') ?? '';
 const DD_DEV = Deno.env.get('DOORDASH_DEVELOPER_ID') ?? '';
 const DD_KEY = Deno.env.get('DOORDASH_KEY_ID') ?? '';
 const DD_SECRET = Deno.env.get('DOORDASH_SIGNING_SECRET') ?? '';
+const JOB_KEY = Deno.env.get('JOB_KEY') ?? '';               // optional; otherwise the key in Vault (migration 0014) is used
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -137,7 +138,16 @@ const timeText = (iso: string, tz: string) =>
 async function menuFor(slug: string) {
   const m = await rpc('get_menu', { p_slug: String(slug ?? '') });
   if (!m) throw new OrderError('Restaurant not found.');
+  await withExceptions(m.restaurant);
   return m;
+}
+
+/** Attach special hours (next 60 days) so pickup times and checks respect closures. */
+async function withExceptions(r: any) {
+  const from = new Intl.DateTimeFormat('en-CA', { timeZone: r.timezone }).format(new Date());
+  const rows = await db(`hours_exceptions?select=day,closed,ranges,note&restaurant_id=eq.${r.id}&day=gte.${from}&order=day.asc&limit=60`).catch(() => []);
+  r.exceptions = Object.fromEntries(rows.map((x: any) => [x.day, { closed: x.closed, ranges: x.ranges, note: x.note }]));
+  return r;
 }
 
 async function sendEmail(to: string | null, subject: string, text: string, orderId: string | null, replyTo?: string) {
@@ -293,12 +303,216 @@ async function staffFor(req: Request, restaurantId: string) {
   return rows?.[0] ? { id: user.id, email: user.email, name: rows[0].name || user.email, role: rows[0].role, perms: rows[0].permissions as string[], agency: false } : null;
 }
 // Admin sections a login can be given. 'team' lets someone add people and set their access.
-const ALL_PERMS = ['kitchen', 'dashboard', 'orders', 'reservations', 'messages', 'rewards', 'gift', 'menu', 'choices', 'pairs', 'settings', 'marketing', 'team'];
+const ALL_PERMS = ['kitchen', 'dashboard', 'orders', 'reservations', 'messages', 'customers', 'campaigns', 'rewards', 'gift', 'menu', 'choices', 'pairs', 'website', 'settings', 'marketing', 'team'];
 const ROLE_PERMS: Record<string, string[]> = {
   owner: ALL_PERMS,
   manager: ALL_PERMS.filter((p) => p !== 'team'),
   kitchen: ['kitchen'],
 };
+
+
+// ---------- texting and email ----------
+// Each restaurant has its own Twilio account (token in Vault) and optional from-address.
+// Every message goes through the messages table so the admin can see what was sent and why.
+type MsgCfg = { twilio_sid?: string; sms_from?: string; token?: string | null; email_from?: string; email_reply_to?: string; quiet_start_min: number; quiet_end_min: number; r: any };
+async function msgConfig(rid: string, cache: Map<string, MsgCfg>) {
+  if (cache.has(rid)) return cache.get(rid)!;
+  const [[m], [r]] = await Promise.all([db(`messaging_settings?select=*&restaurant_id=eq.${rid}`), db(`restaurants?select=id,name,phone,timezone,site_url,forms_email&id=eq.${rid}`)]);
+  const token = m?.twilio_secret_id ? await rpc('messaging_secret', { rid }) : null;
+  const cfg = { ...(m ?? {}), token, quiet_start_min: m?.quiet_start_min ?? 540, quiet_end_min: m?.quiet_end_min ?? 1200, r };
+  cache.set(rid, cfg);
+  return cfg;
+}
+const localMinutes = (tz: string) => { const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date()).map((x) => [x.type, x.value])); return +p.hour * 60 + +p.minute; };
+
+async function twilioSend(cfg: MsgCfg, to: string, body: string) {
+  const form: Record<string, string> = { To: to, Body: body };
+  if (String(cfg.sms_from).startsWith('MG')) form.MessagingServiceSid = cfg.sms_from!; else form.From = cfg.sms_from!;
+  form.StatusCallback = `${SB_URL}/functions/v1/ordering?hook=twilio&r=${cfg.r.id}&status=1`;
+  const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${cfg.twilio_sid}/Messages.json`, {
+    method: 'POST', headers: { Authorization: `Basic ${btoa(`${cfg.twilio_sid}:${cfg.token}`)}`, 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(form),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.message ?? `Twilio ${r.status}`);
+  return d.sid as string;
+}
+
+async function resendSend(cfg: MsgCfg, to: string, subject: string, textBody: string, unsubUrl: string | null, oneClick: string | null) {
+  const headers: Record<string, string> = {};
+  if (unsubUrl && oneClick) { headers['List-Unsubscribe'] = `<${oneClick}>`; headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click'; }
+  const footer = `\n\n—\n${cfg.r.name}${cfg.r.phone ? ` · ${cfg.r.phone}` : ''}${unsubUrl ? `\nDon't want these emails? Unsubscribe: ${unsubUrl}` : ''}`;
+  const r = await fetch('https://api.resend.com/emails', {
+    method: 'POST', headers: { Authorization: `Bearer ${RESEND}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from: cfg.email_from || FROM, to, subject, text: textBody + footer, ...(cfg.email_reply_to ? { reply_to: cfg.email_reply_to } : {}), headers }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.message ?? `Resend ${r.status}`);
+  return d.id as string;
+}
+
+/** Send one queued message now. Consent is checked again at send time. */
+async function deliver(m: any, cache: Map<string, MsgCfg>): Promise<{ status: string; error?: string }> {
+  const cfg = await msgConfig(m.restaurant_id, cache);
+  const c = m.customer_id ? (await db(`customers?select=sms_marketing,sms_updates,sms_stopped_at,email_marketing,unsub_token&id=eq.${m.customer_id}`))[0] : null;
+  const finish = async (status: string, extra: Record<string, unknown> = {}) => {
+    await patch('messages', `id=eq.${m.id}`, { status, ...extra, ...(status === 'sent' ? { sent_at: new Date().toISOString() } : {}) });
+    return { status, error: extra.error as string | undefined };
+  };
+  // Claim it so two runs never send the same message.
+  const claimed = await patch('messages', `id=eq.${m.id}&status=eq.queued`, { send_after: new Date(Date.now() + 15 * 60000).toISOString() });
+  if (!claimed?.length) return { status: 'busy' };
+  try {
+    if (m.channel === 'sms') {
+      if (!cfg.twilio_sid || !cfg.token || !cfg.sms_from) return await finish('skipped', { error: 'Texting is not connected yet.' });
+      if (c && (c.sms_stopped_at || (m.marketing ? !c.sms_marketing : !(c.sms_updates || c.sms_marketing)) && m.kind !== 'test')) return await finish('skipped', { error: 'Guest has not agreed to these texts.' });
+      const bodyText = m.marketing ? `${m.body} Reply STOP to opt out.` : m.body;
+      return await finish('sent', { provider_id: await twilioSend(cfg, m.to_addr, bodyText) });
+    }
+    if (!RESEND || !(cfg.email_from || FROM)) return await finish('skipped', { error: 'Email is not connected yet.' });
+    if (m.marketing && c && !c.email_marketing) return await finish('skipped', { error: 'Guest unsubscribed from marketing email.' });
+    const unsub = c && m.marketing ? `${cfg.r.site_url}/unsubscribe/?t=${c.unsub_token}` : null;
+    const oneClick = c && m.marketing ? `${SB_URL}/functions/v1/ordering?unsub=${c.unsub_token}` : null;
+    return await finish('sent', { provider_id: await resendSend(cfg, m.to_addr, m.subject || cfg.r.name, m.body, unsub, oneClick) });
+  } catch (e) {
+    return await finish('failed', { error: (e instanceof Error ? e.message : String(e)).slice(0, 300) });
+  }
+}
+
+/** Send what's due. Marketing and reminders wait for each restaurant's texting hours. */
+async function sendQueued(restaurantId: string | null, limit = 200) {
+  const cache = new Map<string, MsgCfg>();
+  const rows = await db(`messages?select=*&status=eq.queued&send_after=lte.${new Date().toISOString()}${restaurantId ? `&restaurant_id=eq.${restaurantId}` : ''}&order=created_at.asc&limit=${limit}`);
+  let sent = 0, skipped = 0, failed = 0, waiting = 0;
+  for (const m of rows) {
+    if (m.channel === 'sms' && m.kind !== 'order_ready' && m.kind !== 'test' && m.kind !== 'staff') {
+      const cfg = await msgConfig(m.restaurant_id, cache), now = localMinutes(cfg.r.timezone);
+      if (now < cfg.quiet_start_min || now >= cfg.quiet_end_min) { waiting++; continue; }
+    }
+    const res = await deliver(m, cache);
+    if (res.status === 'sent') sent++; else if (res.status === 'failed') failed++; else if (res.status === 'skipped') skipped++;
+  }
+  return { sent, skipped, failed, waiting };
+}
+
+/** Called every few minutes by the scheduler: queue due automations, then send. */
+async function tick() {
+  const rs = await db('restaurants?select=id&active=eq.true');
+  let queued = 0;
+  for (const r of rs) queued += (await rpc('automations_tick', { rid: r.id }).catch((e) => { console.error(e); return 0; })) ?? 0;
+  return { queued, ...(await sendQueued(null, 300)) };
+}
+
+/** Merge fields filled in here for messages sent straight from an event (order ready, welcome). */
+const fill = (t: string, v: Record<string, string>) => t.replace(/\{([a-z_]+)\}/g, (_, k) => v[k] ?? '');
+async function automationSms(rid: string, customerId: string | null, phone: string, kind: string, vars: Record<string, string>, dedupe: string, marketing: boolean) {
+  try {
+    const [a] = await db(`automations?select=*&restaurant_id=eq.${rid}&kind=eq.${kind}&enabled=eq.true&sms=eq.true`);
+    if (!a || !phone) return;
+    const [r] = await db(`restaurants?select=name,site_url&id=eq.${rid}`);
+    const [c] = customerId ? await db(`customers?select=first_name&id=eq.${customerId}`) : [null];
+    const body = fill(a.sms_body, { restaurant: r.name, first_name: c?.first_name || 'friend', link: `${r.site_url}/menu`, ...vars });
+    const rows = await db('messages?on_conflict=restaurant_id,dedupe', { method: 'POST', headers: { Prefer: 'resolution=ignore-duplicates,return=representation' },
+      body: JSON.stringify({ restaurant_id: rid, customer_id: customerId, channel: 'sms', kind, to_addr: phone, body, marketing, dedupe }) });
+    if (rows?.[0]) await deliver(rows[0], new Map());
+  } catch (e) { console.error('sms', kind, e instanceof Error ? e.message : e); }
+}
+
+/** Record what a guest agreed to at checkout or booking. Never removes consent except email marketing they unticked. */
+async function saveConsent(rid: string, who: Record<string, string>, consent: any) {
+  const p: Record<string, unknown> = { ...who };
+  if (consent?.sms_updates === true) p.sms_updates = true;
+  if (consent?.sms_marketing === true) p.sms_marketing = true;
+  if (typeof consent?.email_marketing === 'boolean') p.email_marketing = consent.email_marketing;
+  await rpc('upsert_customer', { rid, p }).catch((e) => console.error('consent', e));
+}
+
+async function saveMessaging(r: any, body: any) {
+  const sid = text(body.twilio_sid, 64), from = text(body.sms_from, 40), token = String(body.twilio_token ?? '').trim();
+  if (sid && !/^AC[0-9a-f]{32}$/i.test(sid)) throw new OrderError('The Twilio Account SID starts with AC and is 34 characters.');
+  if (from && !/^(\+1\d{10}|MG[0-9a-f]{32})$/i.test(from)) throw new OrderError('Use the texting number as +1XXXXXXXXXX, or a Messaging Service SID (MG…).');
+  if (token && !/^[0-9a-f]{32}$/i.test(token)) throw new OrderError('The Twilio Auth Token is 32 letters and numbers.');
+  const emailFrom = text(body.email_from, 120), replyTo = text(body.email_reply_to, 120).toLowerCase(), review = text(body.review_url, 500);
+  if (replyTo && !validEmail(replyTo)) throw new OrderError('Check the reply-to email.');
+  if (review && !/^https:\/\//.test(review)) throw new OrderError('The review link must start with https://');
+  const qs = Math.max(0, Math.min(1439, Math.floor(Number(body.quiet_start_min) || 540))), qe = Math.max(qs + 60, Math.min(1440, Math.floor(Number(body.quiet_end_min) || 1200)));
+  await db('messaging_settings?on_conflict=restaurant_id', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify({ restaurant_id: r.id, twilio_sid: sid || null, sms_from: from || null, email_from: emailFrom || null, email_reply_to: replyTo || null, review_url: review || null, quiet_start_min: qs, quiet_end_min: qe, updated_at: new Date().toISOString() }) });
+  if (token) await rpc('set_messaging_secret', { rid: r.id, token });
+  return json({ ok: true });
+}
+
+// Twilio webhook: STOP/START/HELP keywords, delivery updates, and guest replies (shown in Messages).
+async function handleTwilio(req: Request, rid: string) {
+  const raw = await req.text();
+  const params = Object.fromEntries(new URLSearchParams(raw));
+  if (!/^[0-9a-f-]{36}$/.test(rid)) return new Response('', { status: 400 });
+  const cfg = await msgConfig(rid, new Map());
+  if (!cfg.token) return new Response('', { status: 403 });
+  const url = `${SB_URL}/functions/v1/ordering${new URL(req.url).search}`;
+  const signed = url + Object.keys(params).sort().map((k) => k + params[k]).join('');
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(cfg.token), { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+  const sig = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(signed)))));
+  if (sig !== req.headers.get('x-twilio-signature')) return new Response('', { status: 403 });
+  const twiml = (msg = '') => new Response(`<?xml version="1.0" encoding="UTF-8"?><Response>${msg ? `<Message>${msg.replace(/[<>&]/g, '')}</Message>` : ''}</Response>`, { headers: { 'Content-Type': 'text/xml' } });
+  if (new URL(req.url).searchParams.get('status')) {
+    if (params.MessageSid && /failed|undelivered/.test(params.MessageStatus ?? '')) await patch('messages', `provider_id=eq.${params.MessageSid}`, { status: 'failed', error: `Carrier: ${params.ErrorCode ?? params.MessageStatus}` });
+    return twiml();
+  }
+  const from = normPhone(params.From), word = String(params.Body ?? '').trim().toUpperCase();
+  if (!from) return twiml();
+  if (/^(STOP|STOPALL|UNSUBSCRIBE|CANCEL|END|QUIT|REVOKE|OPTOUT)$/.test(word)) {
+    await patch('customers', `restaurant_id=eq.${rid}&phone=eq.${encodeURIComponent(from)}`, { sms_marketing: false, sms_updates: false, sms_stopped_at: new Date().toISOString() });
+    await patch('rewards_accounts', `restaurant_id=eq.${rid}&phone=eq.${encodeURIComponent(from)}`, { sms_consent: false });
+    return twiml(); // Twilio sends the standard opt-out confirmation
+  }
+  if (/^(START|UNSTOP|YES)$/.test(word)) {
+    await patch('customers', `restaurant_id=eq.${rid}&phone=eq.${encodeURIComponent(from)}`, { sms_stopped_at: null, sms_updates: true });
+    return twiml();
+  }
+  if (/^(HELP|INFO)$/.test(word)) return twiml(`${cfg.r.name}: For help call ${cfg.r.phone}. Msg & data rates may apply. Reply STOP to opt out.`);
+  const [c] = await db(`customers?select=first_name,last_name,email&restaurant_id=eq.${rid}&phone=eq.${encodeURIComponent(from)}`);
+  const name = c ? [c.first_name, c.last_name].filter(Boolean).join(' ') : '';
+  await insert('form_submissions', { restaurant_id: rid, kind: 'text', data: { name: name || from, phone: from, message: text(params.Body, 1600) } });
+  await sendEmail(cfg.r.forms_email, `${cfg.r.name}: text from ${name || from}`, `${name || from} (${from}) texted:\n\n${text(params.Body, 1600)}\n\nReply from the admin's Messages tab or call them.`, null);
+  return twiml();
+}
+
+// Partial or full refund from the admin. Gift card amounts go back to the card.
+async function refundOrder(r: any, me: any, body: any) {
+  const [o] = await db(`orders?select=*&order_no=eq.${encodeURIComponent(String(body.order_no ?? ''))}&restaurant_id=eq.${r.id}`);
+  if (!o) throw new OrderError('Order not found.');
+  if (!['paid', 'test_paid', 'partly_refunded'].includes(o.payment_status)) throw new OrderError(`This order can't be refunded (${o.payment_status.replace(/_/g, ' ')}).`);
+  const paidByCard = (o.amount_due_cents ?? o.total_cents) - o.refunded_cents;
+  const cents = Math.round(Number(body.cents));
+  if (!Number.isInteger(cents) || cents <= 0) throw new OrderError('Enter an amount to refund.');
+  if (cents > paidByCard) throw new OrderError(`You can refund up to ${money(paidByCard)} on this order.`);
+  let stripeId: string | null = null;
+  if (o.payment_status !== 'test_paid' && o.stripe_payment_intent) {
+    const [x] = await db(`restaurants?select=stripe_account_id&id=eq.${r.id}`);
+    stripeId = (await stripe('refunds', { payment_intent: o.stripe_payment_intent, amount: String(cents) }, x.stripe_account_id, `refund-${o.id}-${o.refunded_cents}-${cents}`)).id;
+  }
+  const reason = text(body.reason, 200) || null;
+  await insert('refunds', { order_id: o.id, cents, reason, by_name: me.name, stripe_refund_id: stripeId });
+  const total = o.refunded_cents + cents;
+  await patch('orders', `id=eq.${o.id}`, { refunded_cents: total, payment_status: total >= paidByCard + o.refunded_cents && o.payment_status !== 'test_paid' ? 'refunded' : o.payment_status === 'test_paid' ? 'test_paid' : 'partly_refunded' });
+  await log(o.id, 'admin', 'refund', { cents, by: me.name, reason });
+  await sendEmail(o.email, `Refund from ${r.name}`, `Hi ${o.first_name}, we refunded ${money(cents)} on order ${o.order_no}${reason ? ` (${reason})` : ''}. It can take 5 to 10 business days to show on your card.`, o.id);
+  return json({ ok: true, refunded_cents: total });
+}
+
+// Website: banner, specials and this week's hours (with special hours), read by every page.
+async function siteInfo(body: any) {
+  const r = await rid(body.restaurant, 'id,timezone,hours');
+  await withExceptions(r);
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: r.timezone }).format(new Date());
+  const notices = await db(`site_notices?select=kind,title,body,link_text,link_url&restaurant_id=eq.${r.id}&active=eq.true&or=(starts_on.is.null,starts_on.lte.${today})&or=(ends_on.is.null,ends_on.gte.${today})&order=sort.asc,created_at.desc&limit=20`);
+  const days = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(`${today}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + i);
+    const ymd = d.toISOString().slice(0, 10), day = d.toLocaleDateString('en-US', { timeZone: 'UTC', weekday: 'short' }).toLowerCase().slice(0, 3);
+    return { date: ymd, ranges: windowsFor(r, ymd, day), special: r.exceptions[ymd] ? (r.exceptions[ymd].note || 'Special hours') : null };
+  });
+  return json({ ok: true, banner: notices.filter((n: any) => n.kind === 'banner')[0] ?? null, specials: notices.filter((n: any) => n.kind === 'special'), days });
+}
 
 // ---------- actions ----------
 async function checkout(req: Request, body: any) {
@@ -316,7 +530,7 @@ async function checkout(req: Request, body: any) {
   const lines = priceCart(menu, body.items, pickup_at);
   const address = delivering ? cleanAddress(body.address) : null;
   const fee = address ? await feeFor(r, address, guest.phone, lines) : 0;
-  const c = await priceWithCredits(r.id, lines, r, body.tip_cents, guest.phone, body.rewards_code, body.gift_code, fee);
+  const c = await priceWithCredits(r.id, lines, r, body.tip_cents, guest.phone, body.rewards_code, body.gift_code, fee, body.promo_code);
   const { t } = c;
 
   const [full] = await db(`restaurants?select=stripe_account_id,site_url&id=eq.${r.id}`);
@@ -324,9 +538,11 @@ async function checkout(req: Request, body: any) {
     restaurant_id: r.id, pickup_at: new Date(pickup_at).toISOString(), ...guest, ...t, gift_applied_cents: c.gift_applied_cents,
     amount_due_cents: c.amount_due_cents, test_mode: r.test_mode, fulfillment: delivering ? 'delivery' : 'pickup', delivery_address: address,
     attribution: cleanAttribution(body.attribution, req),
+    promo_code_id: c.promo?.id ?? null, promo_cents: c.promo_cents, sms_updates: body.consent?.sms_updates === true,
   });
   await insert('order_items', lines.map((l) => ({ ...l, order_id: o.id })));
   await log(o.id, 'guest', 'placed', { ip });
+  await saveConsent(r.id, { phone: guest.phone, email: guest.email, first_name: guest.first_name, last_name: guest.last_name }, body.consent);
   const status_url = `${full.site_url}/order/?t=${o.token}`;
   try {
     if (c.account && (await rpc('rewards_change', { p_account: c.account.id, p_delta: -c.points, p_reason: 'redeemed', p_order: o.id })) === null) throw new OrderError('Your rewards balance changed. Please try again.');
@@ -375,7 +591,7 @@ async function feeFor(r: any, address: any, phone: string, lines: any[]) {
   return await deliveryFee(r, address, phone, value);
 }
 
-async function priceWithCredits(restaurantId: string, lines: any[], r: any, tip: unknown, phone: string, rewardsCode: unknown, giftCode: unknown, deliveryCents = 0) {
+async function priceWithCredits(restaurantId: string, lines: any[], r: any, tip: unknown, phone: string, rewardsCode: unknown, giftCode: unknown, deliveryCents = 0, promoCode: unknown = '') {
   let account: any = null, points = 0, discount = 0;
   const code = cleanCode(rewardsCode);
   if (code) {
@@ -387,7 +603,23 @@ async function priceWithCredits(restaurantId: string, lines: any[], r: any, tip:
     points = rules.rewards_redeem_points;
     discount = rules.rewards_redeem_cents;
   }
-  const t = totals(lines, r, tip, discount, deliveryCents);
+  let promo: any = null, promo_cents = 0;
+  const pc = cleanCode(promoCode);
+  if (pc) {
+    [promo] = await db(`promo_codes?select=*&restaurant_id=eq.${restaurantId}&code=eq.${pc}&active=eq.true`);
+    const now = Date.now();
+    if (!promo || (promo.starts_at && Date.parse(promo.starts_at) > now) || (promo.ends_at && Date.parse(promo.ends_at) < now)) throw new OrderError("That promo code isn't valid right now.");
+    const sub = lines.reduce((n, l) => n + l.line_total_cents, 0);
+    if (sub < promo.min_subtotal_cents) throw new OrderError(`That code needs an order of ${money(promo.min_subtotal_cents)} or more.`);
+    const live = 'status=in.(awaiting_payment,new,accepted,ready,completed)';
+    if (promo.max_uses != null && (await db(`orders?select=id&promo_code_id=eq.${promo.id}&${live}&limit=${promo.max_uses}`)).length >= promo.max_uses) throw new OrderError('That promo code has been used up.');
+    if (promo.once_per_guest) {
+      if (!phone) throw new OrderError('Enter your phone number to use a promo code.');
+      if ((await db(`orders?select=id&promo_code_id=eq.${promo.id}&phone=eq.${encodeURIComponent(phone)}&${live}&limit=1`)).length) throw new OrderError("You've already used this code.");
+    }
+    promo_cents = promoDiscount(promo, Math.max(0, sub - discount));
+  }
+  const t = totals(lines, r, tip, discount + promo_cents, deliveryCents);
   let card: any = null, gift = { gift_applied_cents: 0, amount_due_cents: t.total_cents };
   const gc = cleanCode(giftCode);
   if (gc) {
@@ -396,7 +628,7 @@ async function priceWithCredits(restaurantId: string, lines: any[], r: any, tip:
     if (card.balance_cents <= 0) throw new OrderError('That gift card has no balance left.');
     gift = applyGift(t.total_cents, card.balance_cents);
   }
-  return { t, account, points, card, ...gift };
+  return { t, account, points, card, promo, promo_cents, ...gift };
 }
 
 const ipOf = (req: Request) => (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim() || 'unknown';
@@ -425,6 +657,9 @@ async function rewardsJoin(r: any, d: Record<string, string>) {
   }
   const code = makeCode(8);
   const [a] = await insert('rewards_accounts', { restaurant_id: r.id, phone, name, email: email || null, code, sms_consent: d.sms_consent === 'yes' });
+  const bm = Math.floor(Number(d.birth_month)), bd = Math.floor(Number(d.birth_day));
+  if (bm >= 1 && bm <= 12 && bd >= 1 && bd <= 31) await rpc('upsert_customer', { rid: r.id, p: { phone, birth_month: bm, birth_day: bd } }).catch(() => null);
+  if (d.sms_consent === 'yes') await automationSms(r.id, a.customer_id, phone, 'welcome', { code }, `welcome:${a.id}`, true);
   await sendEmail(a.email, `Welcome to ${r.name} Rewards`, `Thanks for joining, ${name}! Your rewards code is ${code}. Use it with your phone number when you order online.`, null);
   return json({ ok: true, member: { code, points: 0 } });
 }
@@ -475,6 +710,10 @@ async function bookTable(r: any, data: Record<string, string>, slug: string, att
     type: 'reservation', externalId: b.id, reservationId: b.id, valueCents: 0, customer: { phone, email },
     extra: { res_date: data.date, res_time: b.label, party_size: String(guests) },
   }, attribution, null);
+  if (data.sms_updates === 'yes') {
+    await patch('reservations', `id=eq.${b.id}`, { sms_updates: true });
+    await saveConsent(r.id, { phone, email }, { sms_updates: true });
+  }
   data.time = b.label; data.status = b.status; delete data.start_min; // readable in the restaurant's email
   const [x] = await db(`restaurants?select=name,phone,site_url&id=eq.${r.id}`);
   const when = `${resDateText(data.date)} at ${b.label}`;
@@ -547,6 +786,7 @@ async function staffTools(req: Request, body: any) {
   const SECTION: Record<string, string> = {
     reservations: 'reservations', reservation: 'reservations', messages: 'messages', message: 'messages',
     rewards_find: 'rewards', rewards_adjust: 'rewards', gift_find: 'gift', gift_redeem: 'gift', gift_issue: 'gift',
+    refund: 'orders', res_status: 'reservations', msg_settings: 'settings', msg_test: 'campaigns', campaign_send: 'campaigns', message_customer: 'customers',
     team_list: 'team', team_save: 'team', team_remove: 'team',
     mkt_report: 'marketing', mkt_campaigns: 'marketing', mkt_link: 'marketing', mkt_spend: 'marketing',
   };
@@ -562,7 +802,7 @@ async function staffTools(req: Request, body: any) {
     }
     case 'reservations': {
       if (/^\d{4}-\d{2}-\d{2}$/.test(String(body.date))) {
-        const rows = await db(`reservations?select=*&${scope}&res_date=eq.${body.date}&status=in.(requested,confirmed)&order=start_min.asc.nullslast,res_time.asc&limit=300`);
+        const rows = await db(`reservations?select=*&${scope}&res_date=eq.${body.date}&status=in.(requested,confirmed,seated,no_show)&order=start_min.asc.nullslast,res_time.asc&limit=300`);
         const [cap] = await db(`restaurants?select=res_capacity&id=eq.${r.id}`);
         const blocks = await db(`res_blocks?select=id,start_min,end_min,reason&${scope}&block_date=eq.${body.date}&order=start_min.asc.nullsfirst`);
         return json({ ok: true, rows, slots: await rpc('res_day', { rid: r.id, d: body.date }), capacity: cap.res_capacity, blocks });
@@ -579,6 +819,40 @@ async function staffTools(req: Request, body: any) {
       await sendEmail(row.email, to === 'confirmed' ? `Your ${r.name} reservation is confirmed` : `About your ${r.name} reservation`,
         to === 'confirmed' ? `Hi ${row.name}, we'll see you ${when} (party of ${row.party_size}). Questions? Call ${r.phone}.` : `Hi ${row.name}, we can't hold your table for ${when}. Please call ${r.phone} and we'll help you find another time.`, null);
       return json({ ok: true, status: to });
+    }
+    case 'refund': return await refundOrder(r, me, body);
+    case 'res_status': {
+      const to = { seated: 'seated', no_show: 'no_show' }[String(body.move)];
+      if (!to) throw new OrderError('Unknown action.');
+      const [row] = await patch('reservations', `id=eq.${id}&${scope}&status=in.(confirmed,requested,seated,no_show)`, { status: to, handled_by: me.name });
+      return row ? json({ ok: true, status: to }) : json({ ok: false, error: 'Reservation not found.' });
+    }
+    case 'msg_settings': return await saveMessaging(r, body);
+    case 'msg_test': {
+      const to = String(body.to ?? '').trim();
+      const ch = body.channel === 'sms' ? 'sms' : 'email';
+      const addr = ch === 'sms' ? normPhone(to) : to.toLowerCase();
+      if (!addr || (ch === 'email' && !validEmail(addr))) throw new OrderError(ch === 'sms' ? 'Enter a 10-digit phone number.' : 'Enter a valid email.');
+      const [m] = await insert('messages', { restaurant_id: r.id, channel: ch, kind: 'test', to_addr: addr, subject: text(body.subject, 200) || `Test from ${r.name}`, body: text(body.body, 1500) || `This is a test message from ${r.name}.`, marketing: false });
+      return json({ ok: true, ...(await deliver(m, new Map())) });
+    }
+    case 'campaign_send': {
+      const [cp] = await patch('msg_campaigns', `id=eq.${id}&${scope}&status=in.(draft,scheduled)`, { status: 'scheduled', send_at: new Date().toISOString() });
+      if (!cp) throw new OrderError('This campaign was already sent.');
+      const queued = await rpc('campaign_queue', { cid: cp.id });
+      const sent = await sendQueued(r.id, 300);
+      return json({ ok: true, queued, ...sent });
+    }
+    case 'message_customer': {
+      const [c] = await db(`customers?select=*&id=eq.${id}&${scope}`);
+      if (!c) throw new OrderError('Customer not found.');
+      const ch = body.channel === 'sms' ? 'sms' : 'email';
+      const msg = text(body.body, 1500);
+      if (!msg) throw new OrderError('Write a message first.');
+      if (ch === 'sms' && (!c.phone || c.sms_stopped_at || !(c.sms_updates || c.sms_marketing))) throw new OrderError("This guest hasn't agreed to texts. Email them or call instead.");
+      if (ch === 'email' && !c.email) throw new OrderError('This guest has no email on file.');
+      const [m] = await insert('messages', { restaurant_id: r.id, customer_id: c.id, channel: ch, kind: 'staff', to_addr: ch === 'sms' ? c.phone : c.email, subject: text(body.subject, 200) || `A note from ${r.name}`, body: msg, marketing: false });
+      return json({ ok: true, ...(await deliver(m, new Map())) });
     }
     case 'messages':
       return json({ ok: true, rows: await db(`form_submissions?select=*&${scope}&status=eq.new&order=created_at.desc&limit=100`) });
@@ -749,6 +1023,7 @@ async function kitchen(req: Request, body: any) {
   }
   if (to === 'completed') await log(o.id, 'rewards', 'earned', { points: await rpc('order_earn_points', { p_order: o.id }) });
   const [r] = await db(`restaurants?select=name,site_url,phone&id=eq.${o.restaurant_id}`);
+  if (to === 'ready' && o.sms_updates) await automationSms(o.restaurant_id, o.customer_id, o.phone, 'order_ready', { order_no: o.order_no }, `ready:${o.id}`, false);
   if (to === 'ready') await sendEmail(o.email, `Your ${r.name} order is ready`, `Hi ${o.first_name}, order ${o.order_no} is ready${o.fulfillment === 'delivery' ? ' and waiting for your driver' : ' for pickup'}.`, o.id);
   if (to === 'cancelled') {
     await sendEmail(o.email, `Your ${r.name} order was cancelled`,
@@ -761,7 +1036,18 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ ok: false, error: 'POST only' }, 405);
   try {
-    if (new URL(req.url).searchParams.get('hook') === 'stripe') return await handleStripeHook(req);
+    const qs = new URL(req.url).searchParams;
+    if (qs.get('hook') === 'stripe') return await handleStripeHook(req);
+    if (qs.get('hook') === 'twilio') return await handleTwilio(req, qs.get('r') ?? '');
+    if (qs.get('unsub')) {
+      await patch('customers', `unsub_token=eq.${qs.get('unsub')!.replace(/[^a-f0-9]/g, '')}`, { email_marketing: false, email_unsub_at: new Date().toISOString() });
+      return json({ ok: true });
+    }
+    if (qs.get('job') === 'tick') {
+      const key = JOB_KEY || (await rpc('job_key', {}).catch(() => null));
+      if (!key || req.headers.get('x-job-key') !== key) return json({ ok: false }, 401);
+      return json({ ok: true, ...(await tick()) });
+    }
     const body = await req.json().catch(() => ({}));
     switch (String(body.action ?? '')) {
       case 'slots': {
@@ -780,21 +1066,28 @@ Deno.serve(async (req) => {
           await limited(req, 'delivery', 30);
           fee = await feeFor(menu.restaurant, cleanAddress(body.address), normPhone(body.phone) || toE164(menu.restaurant.phone), lines);
         }
-        const c = await priceWithCredits(menu.restaurant.id, lines, menu.restaurant, body.tip_cents, normPhone(body.phone), body.rewards_code, body.gift_code, fee);
-        return json({ ok: true, ...c.t, gift_applied_cents: c.gift_applied_cents, amount_due_cents: c.amount_due_cents });
+        const c = await priceWithCredits(menu.restaurant.id, lines, menu.restaurant, body.tip_cents, normPhone(body.phone), body.rewards_code, body.gift_code, fee, body.promo_code);
+        return json({ ok: true, ...c.t, promo_cents: c.promo_cents, promo_code: c.promo?.code ?? null, gift_applied_cents: c.gift_applied_cents, amount_due_cents: c.amount_due_cents });
       }
       case 'checkout':
         return await checkout(req, body);
       case 'status': {
         const token = String(body.token ?? '').replace(/[^a-f0-9]/g, '');
         if (!token) return json({ ok: false, error: 'Order not found.' }, 404);
-        const rows = await db(`orders?select=order_no,status,payment_status,pickup_at,first_name,subtotal_cents,discount_cents,gift_applied_cents,amount_due_cents,delivery_fee_cents,fulfillment,delivery_address,delivery_tracking_url,delivery_status,tax_cents,guest_fee_cents,tip_cents,total_cents,test_mode,cancel_reason,restaurant:restaurants(name,phone,address,timezone),items:order_items(name,qty,line_total_cents,options,note)&token=eq.${token}`);
+        const rows = await db(`orders?select=order_no,status,payment_status,pickup_at,first_name,subtotal_cents,discount_cents,gift_applied_cents,amount_due_cents,delivery_fee_cents,fulfillment,delivery_address,delivery_tracking_url,delivery_status,tax_cents,guest_fee_cents,tip_cents,total_cents,test_mode,cancel_reason,restaurant:restaurants(name,phone,address,timezone),items:order_items(name,qty,line_total_cents,options,note,menu_item_id,option_ids)&token=eq.${token}`);
         return rows?.[0] ? json({ ok: true, order: rows[0] }) : json({ ok: false, error: 'Order not found.' }, 404);
       }
       case 'kitchen':
         return await kitchen(req, body);
       case 'form':
         return await submitForm(req, body);
+      case 'site_info': return await siteInfo(body);
+      case 'unsubscribe': {
+        const token = String(body.token ?? '').replace(/[^a-f0-9]/g, '');
+        const resub = body.resubscribe === true;
+        const rows = token ? await patch('customers', `unsub_token=eq.${token}`, resub ? { email_marketing: true, email_unsub_at: null } : { email_marketing: false, email_unsub_at: new Date().toISOString() }) : [];
+        return rows?.length ? json({ ok: true, subscribed: resub }) : json({ ok: false, error: 'That link has expired.' });
+      }
       case 'rewards_info': {
         const r = await rid(body.restaurant, 'rewards_points_per_dollar,rewards_redeem_points,rewards_redeem_cents,gift_min_cents,gift_max_cents,test_mode');
         return json({ ok: true, ...r });
