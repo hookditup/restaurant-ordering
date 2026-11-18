@@ -12,9 +12,9 @@
     set(v) { try { v ? localStorage.setItem(KEY, JSON.stringify(v)) : localStorage.removeItem(KEY); } catch { /* signs in again next load */ } },
   };
   let session = keep.get(), r = null, access = [], tab = 'dashboard', days = 30, menu = null, resDay = '', cust = { q: '', seg: 'all', sort: 'last_order', offset: 0 };
-  const ALL_TABS = [['dashboard', 'Dashboard'], ['orders', 'Orders'], ['reservations', 'Reservations'], ['messages', 'Messages'], ['customers', 'Customers'], ['campaigns', 'Texts & emails'], ['rewards', 'Rewards'], ['gift', 'Gift cards'], ['menu', 'Menu'], ['choices', 'Choices'], ['pairs', 'Popular and pairings'], ['website', 'Website'], ['marketing', 'Marketing'], ['settings', 'Settings'], ['team', 'Team'], ['account', 'My login']];
+  const ALL_TABS = [['dashboard', 'Dashboard'], ['orders', 'Orders'], ['reservations', 'Reservations'], ['messages', 'Messages'], ['customers', 'Customers'], ['campaigns', 'Texts & emails'], ['rewards', 'Rewards'], ['gift', 'Gift cards'], ['menu', 'Menu'], ['choices', 'Choices'], ['pairs', 'Popular and pairings'], ['website', 'Website'], ['marketing', 'Marketing'], ['settings', 'Settings'], ['pos', 'POS & printers'], ['team', 'Team'], ['account', 'My login']];
   const SECTION_NAMES = { kitchen: 'Kitchen screen', dashboard: 'Dashboard', orders: 'Orders', reservations: 'Reservations', messages: 'Messages', customers: 'Customers', campaigns: 'Texts and emails', website: 'Website notices and hours', rewards: 'Rewards', gift: 'Gift cards', menu: 'Menu', choices: 'Choices', pairs: 'Popular and pairings', settings: 'Settings', marketing: 'Marketing', team: 'Team' };
-  const tabs = () => ALL_TABS.filter(([k]) => k === 'account' || r.perms.includes(k));
+  const tabs = () => ALL_TABS.filter(([k]) => k === 'account' || r.perms.includes(k === 'pos' ? 'settings' : k));
   const PICK = 'ro-admin-restaurant';
 
   async function refresh() {
@@ -329,7 +329,80 @@
     v.querySelectorAll('[data-day]').forEach((b) => { b.onclick = () => attempt(async () => { await rpc('admin_save_hours_exception', { p_restaurant: r.id, p: { day: b.dataset.day, remove: true } }); await websiteView(); }, 'Removed.'); });
   }
 
+  // ---------- POS and kitchen printers ----------
+  const POS = {
+    clover: { label: 'Clover', help: 'Paid online orders appear on your Clover as open orders at the price the guest paid, and print to your Clover kitchen printer.' },
+    square: { label: 'Square', help: 'Paid online orders appear in Square Orders, marked paid. Square charges the app developer about 1% of each online order sent this way; ask us how that is billed before you turn it on.' },
+    cloudprnt: { label: 'Cloud kitchen printer (Star CloudPRNT)', help: 'Works with any POS, or none. A Star printer with CloudPRNT (for example the mC-Print3 or TSP143IV) prints each paid order.' },
+  };
+  const posFn = async (body) => {
+    const go = () => fetch(`${cfg.url}/functions/v1/pos`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` }, body: JSON.stringify({ restaurant: r.slug, ...body }) });
+    let x = await go();
+    if (x.status === 401 && await refresh()) x = await go();
+    const d = await x.json().catch(() => ({}));
+    if (!d.ok) throw new Error(d.error || 'That did not work.');
+    return d;
+  };
+  const when = (d) => (d ? new Date(d).toLocaleString('en-US', { timeZone: r.timezone, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
+  const posFields = (p, c = {}) => {
+    const s = c.settings || {};
+    const env = `<label>Account type <select name="env"><option value="production"${s.env !== 'sandbox' ? ' selected' : ''}>Live</option><option value="sandbox"${s.env === 'sandbox' ? ' selected' : ''}>Sandbox (testing)</option></select></label>`;
+    const tok = (what) => `<label>${what} <input name="token" type="password" autocomplete="new-password" placeholder="${c.has_token ? 'Saved. Leave blank to keep it.' : 'Paste the token'}"${c.id ? '' : ' required'}></label>`;
+    if (p === 'clover') return `<label>Merchant ID <input name="merchant_id" value="${esc(s.merchant_id || '')}" required placeholder="13 letters and numbers"></label>${env}${tok('API token')}
+      <label>Order type ID (optional) <input name="order_type_id" value="${esc(s.order_type_id || '')}" placeholder="For example, Online Pickup"></label>
+      <label class="a-check"><input type="checkbox" name="print"${s.print !== false ? ' checked' : ''}> Print a kitchen ticket on Clover</label>`;
+    if (p === 'square') return `<label>Location ID <input name="location_id" value="${esc(s.location_id || '')}" required></label>${env}${tok('Access token')}`;
+    return `<label>Paper width <select name="width">${[[32, '58 mm (2 inch)'], [42, '80 mm (3 inch)'], [48, '80 mm, small font']].map(([v, t]) => `<option value="${v}"${+(s.width || 42) === v ? ' selected' : ''}>${t}</option>`).join('')}</select></label>
+      <label>Copies <select name="copies">${[1, 2, 3].map((n) => `<option${+(s.copies || 1) === n ? ' selected' : ''}>${n}</option>`).join('')}</select></label>`;
+  };
+  const posSettings = (p, x) => (p === 'clover' ? { merchant_id: x.merchant_id.value.trim(), env: x.env.value, order_type_id: x.order_type_id.value.trim(), print: x.print.checked }
+    : p === 'square' ? { location_id: x.location_id.value.trim(), env: x.env.value } : { width: +x.width.value, copies: +x.copies.value });
+  const JOB = { pending: 'Waiting', sending: 'Sending', sent: 'Sent', failed: 'Failed', cancelled: 'Cancelled' };
+
+  async function posView() {
+    const d = await rpc('admin_pos', { p_restaurant: r.id });
+    const status = (c) => {
+      if (!c.enabled) return 'Off';
+      if (c.last_error) return `<span class="a-bad">Problem: ${esc(c.last_error)}</span>`;
+      if (c.provider === 'cloudprnt') return c.last_seen_at ? `Printer last checked in ${esc(when(c.last_seen_at))}` : 'Waiting for the printer to check in';
+      return c.last_ok_at ? `Working. Last success ${esc(when(c.last_ok_at))}` : 'Not tested yet';
+    };
+    view().innerHTML = `<p class="a-help">Send every paid online order to your POS or a kitchen printer, so the kitchen doesn't have to watch this screen. You can have more than one, for example Clover plus a bar printer. Orders also stay on the Kitchen screen.</p>
+      ${d.connections.map((c) => `<section class="a-box"><h2>${esc(c.name || POS[c.provider].label)}</h2>
+        <p>${esc(POS[c.provider].label)} · ${status(c)}</p>
+        ${c.provider === 'cloudprnt' ? `<p class="a-help">In the printer's web page (type its IP address into a browser), turn on CloudPRNT and set the Server URL to:<br><code>${esc(cfg.url)}/functions/v1/pos?print=${esc(c.print_key)}</code><br>Polling every 5 seconds is fine. Keep this link private: anyone with it can read your tickets.</p>` : ''}
+        <form class="a-pos-f" data-id="${c.id}" data-provider="${c.provider}"><div class="a-grid2"><label>Name <input name="name" value="${esc(c.name)}" maxlength="60"></label>${posFields(c.provider, c)}</div>
+          <label class="a-check"><input type="checkbox" name="enabled"${c.enabled ? ' checked' : ''}> On</label>
+          <div class="a-btns"><button>Save</button><button type="button" class="a-alt" data-postest="${c.id}">${c.provider === 'cloudprnt' ? 'Print a test ticket' : 'Test connection'}</button></div></form></section>`).join('')}
+      <details class="a-box"${d.connections.length ? '' : ' open'}><summary>Add a POS or printer</summary>
+        <form id="a-pos-new"><label>Type <select name="provider">${Object.entries(POS).map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join('')}</select></label>
+          <p class="a-help" id="a-pos-help"></p><div class="a-grid2"><label>Name <input name="name" maxlength="60" placeholder="For example, Kitchen printer"></label><div id="a-pos-fields" class="a-grid2"></div></div>
+          <div class="a-btns"><button>Add</button></div></form></details>
+      <h2>Recent sends</h2>
+      ${d.jobs.length ? `<table class="a-table"><caption class="sr">Orders sent to POS and printers</caption><thead><tr><th scope="col">When</th><th scope="col">Order</th><th scope="col">To</th><th scope="col">Status</th><th scope="col"><span class="sr">Actions</span></th></tr></thead><tbody>
+        ${d.jobs.map((j) => `<tr><td>${esc(when(j.created_at))}</td><td>${j.kind === 'test' ? 'Test' : `#${esc(j.order_no)}`}</td><td>${esc(j.connection || POS[j.provider].label)}</td>
+          <td>${JOB[j.status]}${j.attempts > 1 ? ` (${j.attempts} tries)` : ''}${j.error ? `<br><small class="a-bad">${esc(j.error)}</small>` : ''}</td>
+          <td>${['failed', 'cancelled'].includes(j.status) ? `<button class="a-alt" data-posjob="${j.id}" data-move="retry">Send again</button>` : ''}${['pending', 'failed'].includes(j.status) ? ` <button class="a-alt" data-posjob="${j.id}" data-move="cancel">Cancel</button>` : ''}</td></tr>`).join('')}</tbody></table>` : '<p>Nothing sent yet.</p>'}`;
+    const v = view(), nf = v.querySelector('#a-pos-new');
+    const pick = () => { const p = nf.elements.provider.value; v.querySelector('#a-pos-fields').innerHTML = posFields(p); v.querySelector('#a-pos-help').textContent = POS[p].help; };
+    nf.elements.provider.onchange = pick; pick();
+    nf.onsubmit = (e) => { e.preventDefault(); const x = nf.elements, p = x.provider.value; attempt(async () => {
+      await rpc('admin_save_pos', { p_restaurant: r.id, p: { provider: p, name: x.name.value.trim() || POS[p].label, settings: posSettings(p, x), token: x.token ? x.token.value.trim() : '' } });
+      await posView();
+    }, p === 'cloudprnt' ? 'Added. Copy the Server URL into the printer.' : 'Added. Press Test connection to check it.'); };
+    v.querySelectorAll('.a-pos-f').forEach((f) => { f.onsubmit = (e) => { e.preventDefault(); const x = f.elements, p = f.dataset.provider; attempt(async () => {
+      await rpc('admin_save_pos', { p_restaurant: r.id, p: { id: f.dataset.id, name: x.name.value.trim(), enabled: x.enabled.checked, settings: posSettings(p, x), token: x.token ? x.token.value.trim() : '' } });
+      await posView();
+    }); }; });
+    v.querySelectorAll('[data-postest]').forEach((b) => { b.onclick = async () => {
+      b.disabled = true;
+      try { const res = await posFn({ action: 'test', connection_id: b.dataset.postest }); await posView(); say(res.message); } catch (e) { await posView().catch(() => {}); say(e.message, true); }
+    }; });
+    v.querySelectorAll('[data-posjob]').forEach((b) => { b.onclick = () => attempt(async () => { await rpc('admin_pos_job', { p_restaurant: r.id, p: { id: b.dataset.posjob, move: b.dataset.move } }); await posView(); }, b.dataset.move === 'retry' ? 'Sending again.' : 'Cancelled.'); });
+  }
+
   const views = {
+    pos: posView,
     async dashboard() {
       const s = await rpc('admin_stats', { p_restaurant: r.id, p_days: days });
       const avg = s.orders ? s.sales_cents / s.orders : 0;

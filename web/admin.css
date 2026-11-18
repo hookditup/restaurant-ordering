@@ -41,3 +41,5 @@ button{min-height:44px;padding:0 1rem;border:0;border-radius:8px;background:#931
 #a-resset .a-check,#a-resset button{grid-column:1/-1;justify-self:start}
 .a-resnav{align-items:flex-end}.a-resnav label{flex:0 1 200px!important}
 details.a-box>summary{cursor:pointer;font-weight:700;min-height:32px}
+
+.a-box code { word-break: break-all; }
