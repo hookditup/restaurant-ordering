@@ -1,0 +1,36 @@
+{
+  "cleanUrls": false,
+  "trailingSlash": false,
+  "redirects": [
+    {
+      "source": "/login",
+      "destination": "/rewards",
+      "permanent": true
+    },
+    {
+      "source": "/account",
+      "destination": "/rewards",
+      "permanent": true
+    },
+    {
+      "source": "/download-app",
+      "destination": "/",
+      "permanent": true
+    },
+    {
+      "source": "/heber-city",
+      "destination": "/",
+      "permanent": true
+    },
+    {
+      "source": "/gift-cards/check",
+      "destination": "/gift-cards",
+      "permanent": true
+    },
+    {
+      "source": "/contact",
+      "destination": "/questions",
+      "permanent": true
+    }
+  ]
+}

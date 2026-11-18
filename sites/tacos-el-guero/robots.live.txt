@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /kitchen
+Sitemap: https://tacoselguerout.com/sitemap.xml

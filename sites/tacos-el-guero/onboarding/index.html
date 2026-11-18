@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Texting Setup Survey | Hook'd IT Up</title>
+<link rel="stylesheet" href="/onboarding/onboarding.css">
+<script src="/assets/config.js"></script>
+<script src="/onboarding/onboarding.js" defer></script>
+</head>
+<body>
+<header class="ob-top"><p class="ob-brand">Hook'd IT Up</p></header>
+<main id="main" class="ob">
+<h1>Texting setup survey</h1>
+<p class="ob-lead">Phone carriers require every business that sends texts to register first. Your answers let us register your restaurant so texts like order updates, reservation reminders and rewards reach your guests instead of being blocked. It takes about 10 minutes.</p>
+<p class="ob-note">Fields marked <span aria-hidden="true">*</span><span class="sr">with an asterisk</span> are required. Business details must match your IRS records exactly, or carriers reject the registration.</p>
+
+<form id="ob-form" novalidate>
+<div class="hp" aria-hidden="true"><label>Website <input name="website_hp" tabindex="-1" autocomplete="off"></label></div>
+
+<fieldset><legend>1. Your business</legend>
+<label>Legal business name, exactly as on IRS records <span aria-hidden="true">*</span><input name="legal_name" required autocomplete="organization"></label>
+<label>Name guests know you by (if different)<input name="brand_name"></label>
+<label>Business type <span aria-hidden="true">*</span><select name="business_type" required><option value="">Choose one</option><option>LLC</option><option>Corporation</option><option>Partnership</option><option>Sole proprietor</option><option>Nonprofit</option></select></label>
+<label>EIN (federal tax ID) <span aria-hidden="true">*</span><input name="ein" inputmode="numeric" placeholder="12-3456789" aria-describedby="ein-help"></label>
+<p class="ob-help" id="ein-help">Required unless you're a sole proprietor without one. Sole proprietors without an EIN can still register, but with lower daily texting limits.</p>
+<label>State where the business is registered <span aria-hidden="true">*</span><input name="registered_state" required></label>
+<label>Street address, as on IRS records <span aria-hidden="true">*</span><input name="street" required autocomplete="street-address"></label>
+<div class="ob-row"><label>City <span aria-hidden="true">*</span><input name="city" required autocomplete="address-level2"></label><label>State <span aria-hidden="true">*</span><input name="state" required autocomplete="address-level1"></label><label>ZIP <span aria-hidden="true">*</span><input name="zip" required inputmode="numeric" autocomplete="postal-code"></label></div>
+<label>Website <span aria-hidden="true">*</span><input name="site_url" type="url" required placeholder="https://"></label>
+<label>Business phone <span aria-hidden="true">*</span><input name="business_phone" type="tel" required autocomplete="tel"></label>
+<label>Business email <span aria-hidden="true">*</span><input name="business_email" type="email" required aria-describedby="email-help"></label>
+<p class="ob-help" id="email-help">Use an address at your own domain (like owner@yourrestaurant.com) if you have one. Gmail and Yahoo addresses slow down approval.</p>
+<label>Is the business publicly traded on a stock exchange? <select name="public_company"><option>No</option><option>Yes</option></select></label>
+</fieldset>
+
+<fieldset><legend>2. Authorized person</legend>
+<p class="ob-help">The owner or manager carriers can contact about this registration.</p>
+<div class="ob-row"><label>First name <span aria-hidden="true">*</span><input name="rep_first" required autocomplete="given-name"></label><label>Last name <span aria-hidden="true">*</span><input name="rep_last" required autocomplete="family-name"></label></div>
+<label>Job title <span aria-hidden="true">*</span><input name="rep_title" required placeholder="Owner"></label>
+<label>Position <span aria-hidden="true">*</span><select name="rep_position" required><option value="">Choose one</option><option>CEO / Owner</option><option>General manager</option><option>Director</option><option>VP</option><option>CFO</option><option>Other</option></select></label>
+<label>Email <span aria-hidden="true">*</span><input name="rep_email" type="email" required autocomplete="email"></label>
+<label>Mobile phone <span aria-hidden="true">*</span><input name="rep_phone" type="tel" required autocomplete="tel" aria-describedby="rep-help"></label>
+<p class="ob-help" id="rep-help">Sole proprietors get a verification text at this number during registration.</p>
+</fieldset>
+
+<fieldset><legend>3. Texting number and billing</legend>
+<fieldset class="ob-choice"><legend>Which number should texts come from? <span aria-hidden="true">*</span></legend>
+<label><input type="radio" name="number_choice" value="new" required> A new local number</label>
+<label><input type="radio" name="number_choice" value="existing"> Our current restaurant phone number (text-enabled; calls still ring the same way)</label>
+</fieldset>
+<label>Preferred area code for a new number<input name="area_code" inputmode="numeric" maxlength="3" placeholder="435"></label>
+<label>Current phone carrier (only if texting from your current number)<input name="current_carrier" placeholder="Comcast, Verizon, AT&amp;T…"></label>
+<fieldset class="ob-choice"><legend>Who pays the texting account (Twilio)? <span aria-hidden="true">*</span></legend>
+<label><input type="radio" name="billing" value="restaurant" required> The restaurant, with its own card on the account</label>
+<label><input type="radio" name="billing" value="hookditup"> Billed through Hook'd IT Up</label>
+</fieldset>
+</fieldset>
+
+<fieldset><legend>4. Texts you'll send</legend>
+<fieldset class="ob-choice"><legend>Check everything you want to send <span aria-hidden="true">*</span></legend>
+<label><input type="checkbox" name="msg_types" value="order_updates"> Order updates (received, ready, out for delivery)</label>
+<label><input type="checkbox" name="msg_types" value="reservations"> Reservation confirmations and reminders</label>
+<label><input type="checkbox" name="msg_types" value="rewards"> Rewards (points earned, reward ready)</label>
+<label><input type="checkbox" name="msg_types" value="birthday"> Birthday offers</label>
+<label><input type="checkbox" name="msg_types" value="winback"> "We miss you" offers to guests who haven't been back</label>
+<label><input type="checkbox" name="msg_types" value="promotions"> Specials, events and promotions</label>
+<label><input type="checkbox" name="msg_types" value="reviews"> Review requests after a visit</label>
+<label><input type="checkbox" name="msg_types" value="catering"> Catering and party follow-up</label>
+</fieldset>
+<label>About how many promotional texts would one guest get per month? <span aria-hidden="true">*</span><select name="frequency" required><option value="">Choose one</option><option>1 to 2</option><option>Up to 4</option><option>Up to 8</option><option>More than 8</option></select></label>
+<label>Rough total texts per month across all guests<select name="volume"><option>Under 2,000</option><option>2,000 to 10,000</option><option>10,000 to 50,000</option><option>More than 50,000</option><option>Not sure</option></select></label>
+<fieldset class="ob-choice"><legend>Will any texts mention alcohol (margaritas, beer, drink specials)? <span aria-hidden="true">*</span></legend>
+<label><input type="radio" name="alcohol" value="yes" required> Yes</label>
+<label><input type="radio" name="alcohol" value="no"> No</label>
+</fieldset>
+<fieldset class="ob-choice"><legend>Will texts include links or phone numbers?</legend>
+<label><input type="checkbox" name="has_links" value="yes"> Links (to the menu, ordering, a reward)</label>
+<label><input type="checkbox" name="has_phone" value="yes"> Phone numbers</label>
+</fieldset>
+<label>Write one or two texts you'd want to send, in your own words<textarea name="sample_ideas" rows="3" placeholder="Taco Tuesday! $2 street tacos all day. Order at tacoselguerout.com"></textarea></label>
+</fieldset>
+
+<fieldset><legend>5. How guests sign up</legend>
+<fieldset class="ob-choice"><legend>Where will guests agree to get texts? Check all that apply. <span aria-hidden="true">*</span></legend>
+<label><input type="checkbox" name="optin_methods" value="website_rewards"> Rewards sign-up on our website</label>
+<label><input type="checkbox" name="optin_methods" value="checkout"> A checkbox at online checkout</label>
+<label><input type="checkbox" name="optin_methods" value="reservation"> Our reservation form</label>
+<label><input type="checkbox" name="optin_methods" value="qr"> A QR code on tables, menus or receipts</label>
+<label><input type="checkbox" name="optin_methods" value="keyword"> Texting a keyword to our number</label>
+<label><input type="checkbox" name="optin_methods" value="paper"> A paper sign-up sheet</label>
+<label><input type="checkbox" name="optin_methods" value="verbal"> Asking guests at the register</label>
+</fieldset>
+<label>Sign-up keyword, if guests can text one (one word)<input name="keyword" placeholder="TACOS" maxlength="20"></label>
+<fieldset class="ob-choice"><legend>Do you already have a list of guest phone numbers? <span aria-hidden="true">*</span></legend>
+<label><input type="radio" name="has_list" value="no" required> No</label>
+<label><input type="radio" name="has_list" value="yes"> Yes</label>
+</fieldset>
+<label>If yes, how did those guests agree to get texts?<textarea name="list_consent" rows="2" aria-describedby="list-help"></textarea></label>
+<p class="ob-help" id="list-help">Promotional texts can only go to guests who clearly agreed to them. Numbers collected only for orders can get order updates, not promotions.</p>
+</fieldset>
+
+<fieldset><legend>6. Help contact and policies</legend>
+<label>Contact for guests who reply HELP <span aria-hidden="true">*</span><input name="help_contact" required placeholder="(435) 555-0100 or hello@yourrestaurant.com"></label>
+<label>Privacy policy link (leave blank if you need one)<input name="privacy_url" type="url" placeholder="https://"></label>
+<label>Terms link (leave blank if you need one)<input name="terms_url" type="url" placeholder="https://"></label>
+<p class="ob-help">Carriers check that your privacy policy says texting sign-up data is never sold or shared for marketing, and that your terms explain how to stop texts. We can write or update both for you.</p>
+<label>Anything else we should know?<textarea name="notes" rows="3"></textarea></label>
+</fieldset>
+
+<label class="ob-agree"><input type="checkbox" name="authorize" value="yes" required> <span>The information above is accurate, and I authorize Hook'd IT Up to register our business for business texting on our behalf. <span aria-hidden="true">*</span></span></label>
+<div id="ob-msg" role="alert" aria-live="assertive"></div>
+<button type="submit">Send answers</button>
+</form>
+<div id="ob-done" hidden tabindex="-1"><h2>Thanks, we got your answers.</h2><p>We'll prepare the registration, reach out if anything needs fixing, and let you know when carriers approve it.</p></div>
+</main>
+</body>
+</html>
