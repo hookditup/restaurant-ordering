@@ -181,12 +181,12 @@ def home():
 {split('Order From Our Website', 'Order directly from our website to save money in fees, get faster service, earn free food via our rewards program, and support local business.', 'birria-tacos-rice-beans-plate', 'A plate of birria tacos with Mexican rice, refried beans and consomé.', order_btn())}
 <section class="sec alt"><div class="wrap welcome"><h2>Welcome to Tacos El Güero!</h2><p>We pride ourselves with the ability to offer our customers delicious and authentic Mexican food, created at the highest standards.</p><ul aria-label="We offer"><li>Breakfast</li><li>Lunch</li><li>Dinner</li></ul><p>Come and experience the authentic Mexican taste!</p></div></section>
 {split("It's All About Family", FAMILY, 'jose-and-selena-owners-tacos-el-guero', 'Jose and Selena, the husband and wife who own Tacos El Güero.', btn('Our story', '/story', 'ghost'))}
-{split('Generations in The Making', GENERATIONS, 'tacos-el-guero-original-storefront', 'The original Tacos El Güero storefront, with its oval logo sign and an Open / Abierto sign in the window.', flip=True)}
+{split('Generations in The Making', GENERATIONS, 'tacos-el-guero-main-street-building', 'The Tacos El Güero building on Main Street in Heber City, with its tall oval sign by the road.', flip=True)}
 <section class="sec alt"><div class="wrap"><h2>What guests are saying</h2><div class="scroller revs-scroll" data-scroller="28" role="group" aria-label="Guest reviews" tabindex="0"><div class="scroller-track">{reviews}</div></div><p class="center">{btn('Leave us a review', '/review', 'ghost')}</p></div></section>
 <section class="sec"><div class="wrap cards3">
 <article class="cta-card">{img('/img/site/chips-and-salsa.webp', 'Tortilla chips with a cup of red salsa', 600, 400)}<h2>Tacos El Guero's Rewards</h2><p>Join our rewards program to earn points, get free items, and stay up to date with us.</p>{btn('Join rewards', '/rewards')}</article>
 <article class="cta-card">{img('/img/site/al-pastor-street-tacos-heber-city.webp', 'Al pastor street tacos with onion and cilantro', 600, 400)}<h2>Gift Cards</h2><p>Give the gift of a delicious meal. Send a gift card by email in minutes.</p>{btn('Buy a gift card', '/gift-cards')}</article>
-<article class="cta-card">{img('/img/site/carne-asada-street-tacos.webp', 'Street tacos piled with grilled meat, diced onion and cilantro', 600, 400)}<h2>We're Hiring</h2><p>We are always hiring A players who work hard, love helping others, and do great work.</p>{btn('Apply today', '/careers')}</article>
+<article class="cta-card">{img('/img/site/tacos-el-guero-main-street-building.webp', 'The Tacos El Güero building and sign on Main Street', 600, 400)}<h2>We're Hiring</h2><p>We are always hiring A players who work hard, love helping others, and do great work.</p>{btn('Apply today', '/careers')}</article>
 </div></section>
 <section class="sec alt"><div class="wrap narrow"><h2>Frequently asked questions</h2>{faq(HOME_FAQ)}<p class="center">{btn('Ask us a question', '/questions', 'ghost')}</p></div></section>
 {location_block()}'''
@@ -238,7 +238,7 @@ def build():
     home(); menu(); tags()
     page('/story', 'Tacos El Guero #1 - Heber City | Our Story', 'Tacos El Guero #1 - Heber City Official Website. Save Money Ordering Directly Here. Healthy Options. Fast Service. Friendly Team. Top Rated.',
         phead('Our Story') + split("It's All About Family", FAMILY, 'jose-and-selena-owners-tacos-el-guero', 'Jose and Selena, the husband and wife who own Tacos El Güero.')
-        + split('Generations in The Making', GENERATIONS, 'tacos-el-guero-original-storefront', 'The original Tacos El Güero storefront, with its oval logo sign and an Open / Abierto sign in the window.', btn('See our menu', '/menu', 'ghost'), flip=True)
+        + split('Generations in The Making', GENERATIONS, 'tacos-el-guero-main-street-building', 'The Tacos El Güero building on Main Street in Heber City, with its tall oval sign by the road.', btn('See our menu', '/menu', 'ghost'), flip=True)
         + gallery('From Our Kitchen', GALLERY) + location_block(), '/story')
     page('/events', 'Events at Tacos El Guero #1 - Heber City', 'Tacos El Guero #1 - Heber City Official Website. Save Money Ordering Directly Here. Healthy Options. Fast Service. Friendly Team. Top Rated.',
         phead('Events') + f'<section class="sec"><div class="wrap narrow events-empty"><h2>There are no events right now</h2><p>Check back later to see if we\'ve added any.</p>{btn("Ask us a question", "/questions", "ghost")}</div></section>' + location_block(), '/events')
