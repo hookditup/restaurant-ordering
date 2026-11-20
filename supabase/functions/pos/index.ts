@@ -1,9 +1,10 @@
 // POS and kitchen-printer connections for paid online orders.
 //   POST ?job=send                     scheduler / database trigger: send due jobs (x-job-key)
 //   POST|GET|DELETE ?print=<key>       Star CloudPRNT printer: poll, fetch ticket, confirm
-//   POST { action: 'test', restaurant, connection_id }   staff (Settings): check a connection
+//   POST ?job=sync                     scheduler: sold-out sync from POS menus (x-job-key)
+//   POST { action: 'test' | 'sync', restaurant, connection_id }   staff (Settings): check a connection / sync now
 // Jobs are created by the orders trigger (migration 0015) when an order is paid.
-import { PosError, PROVIDERS, testTicket, ticketText } from './adapters.js';
+import { PosError, PROVIDERS, planSync, testTicket, ticketText } from './adapters.js';
 
 const SB_URL = Deno.env.get('SUPABASE_URL')!;
 const SB_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -29,11 +30,16 @@ const http = async (method: string, url: string, init: { headers?: Record<string
 };
 
 async function orderFor(id: string) {
-  const [o] = await db(`orders?select=*,restaurant:restaurants(name,timezone),items:order_items(name,qty,unit_price_cents,line_total_cents,options,note)&id=eq.${id}`);
+  const [o] = await db(`orders?select=*,restaurant:restaurants(name,timezone),items:order_items(menu_item_id,name,qty,unit_price_cents,line_total_cents,options,note)&id=eq.${id}`);
   return o;
 }
 async function ctxFor(c: any) {
-  return { settings: c.settings ?? {}, token: c.secret_id ? await rpc('pos_secret', { cid: c.id }) : null, http };
+  const ctx: any = { settings: c.settings ?? {}, token: c.secret_id ? await rpc('pos_secret', { cid: c.id }) : null, http };
+  if (c.provider === 'toast') { // Toast needs to know which Toast item each dish is
+    const links = await db(`pos_item_links?select=item_id,pos_id&connection_id=eq.${c.id}&pos_id=not.is.null`);
+    ctx.links = new Map(links.map((l: any) => [l.item_id, l.pos_id]));
+  }
+  return ctx;
 }
 
 // Back off 1, 5, 15, 60 minutes; give up after 5 tries and show it in the admin.
@@ -61,6 +67,39 @@ async function sendDue() {
     }
   }
   return { sent, failed };
+}
+
+// ---------- menu sync: sold-out dishes and choices follow the POS ----------
+async function syncOne(c: any) {
+  const p = PROVIDERS[c.provider as keyof typeof PROVIDERS] as any;
+  if (!p?.catalog) throw new PosError('This connection has no menu to sync.');
+  const catalog = await p.catalog(await ctxFor(c));
+  const rid = c.restaurant_id;
+  const items = await db(`menu_items?select=id,name,available&restaurant_id=eq.${rid}`);
+  const options = await db(`modifier_options?select=id,name,available&restaurant_id=eq.${rid}`);
+  const links = await db(`pos_item_links?select=item_id,pos_id,auto,last_pos_available&connection_id=eq.${c.id}`);
+  const plan = planSync({ items, options }, catalog, links, c.option_states ?? {});
+  for (const l of plan.links) {
+    if (l.drop) await db(`pos_item_links?connection_id=eq.${c.id}&item_id=eq.${l.item_id}`, { method: 'DELETE' });
+    else await db('pos_item_links?on_conflict=connection_id,item_id', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates' },
+      body: JSON.stringify({ connection_id: c.id, restaurant_id: rid, item_id: l.item_id, pos_id: l.pos_id, auto: l.auto, last_pos_available: l.last_pos_available }) });
+  }
+  for (const it of plan.items) await patch('menu_items', `id=eq.${it.id}&restaurant_id=eq.${rid}`, { available: it.available });
+  for (const o of plan.options) await patch('modifier_options', `id=eq.${o.id}&restaurant_id=eq.${rid}`, { available: o.available });
+  const summary = { matched: plan.matched, unmatched: plan.unmatched.length, missing: plan.missing, changed: [...plan.items, ...plan.options].map((x) => `${x.name}: ${x.available ? 'back on' : 'sold out'}`).slice(0, 30) };
+  await patch('pos_connections', `id=eq.${c.id}`, { last_sync_at: new Date().toISOString(), sync_summary: summary, option_states: plan.optionStates,
+    pos_catalog: catalog.items.map((i: any) => ({ id: i.id, name: i.name })), last_ok_at: new Date().toISOString(), last_error: null });
+  return summary;
+}
+async function syncDue() {
+  const cons = await db('pos_connections?select=*&enabled=is.true&settings->>sync_menu=eq.true');
+  let ok = 0, failed = 0;
+  for (const c of cons) {
+    try { await syncOne(c); ok++; } catch (e) {
+      failed++; await patch('pos_connections', `id=eq.${c.id}`, { last_error: `Menu sync: ${(e instanceof Error ? e.message : String(e)).slice(0, 280)}` });
+    }
+  }
+  return { synced: ok, failed };
 }
 
 // ---------- Star CloudPRNT ----------
@@ -114,15 +153,25 @@ Deno.serve(async (req) => {
     const qs = new URL(req.url).searchParams;
     if (qs.has('print')) return await cloudPrnt(req, qs.get('print') ?? '');
     if (req.method !== 'POST') return json({ ok: false, error: 'POST only' }, 405);
-    if (qs.get('job') === 'send') {
+    if (qs.get('job') === 'send' || qs.get('job') === 'sync') {
       const key = await rpc('job_key', {}).catch(() => null);
       if (!key || req.headers.get('x-job-key') !== key) return json({ ok: false }, 401);
-      return json({ ok: true, ...(await sendDue()) });
+      return json({ ok: true, ...(qs.get('job') === 'send' ? await sendDue() : await syncDue()) });
     }
     const body = await req.json().catch(() => ({}));
-    if (body.action === 'test') {
+    if (body.action === 'test' || body.action === 'sync') {
       const [c] = await db(`pos_connections?select=*,restaurant:restaurants(slug)&id=eq.${encodeURIComponent(String(body.connection_id ?? ''))}`);
       if (!c || c.restaurant.slug !== body.restaurant || !(await staffCan(req, c.restaurant_id))) return json({ ok: false, error: 'Please sign in again.' }, 401);
+      if (body.action === 'sync') {
+        try {
+          const s = await syncOne(c);
+          return json({ ok: true, message: `Synced. ${s.matched} dishes matched, ${s.unmatched} not matched.${s.changed.length ? ` Changed: ${s.changed.join('; ')}.` : ' Nothing changed.'}` });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          await patch('pos_connections', `id=eq.${c.id}`, { last_error: `Menu sync: ${msg.slice(0, 280)}` });
+          return json({ ok: false, error: msg });
+        }
+      }
       if (c.provider === 'cloudprnt') {
         await db('pos_jobs', { method: 'POST', body: JSON.stringify({ restaurant_id: c.restaurant_id, connection_id: c.id, kind: 'test' }) });
         return json({ ok: true, message: c.last_seen_at && Date.now() - Date.parse(c.last_seen_at) < 120000 ? 'Test ticket sent. It should print in a few seconds.' : "Test ticket queued. The printer hasn't checked in yet; it will print as soon as it does." });
