@@ -9,6 +9,7 @@ PHONE = '(435) 654-2983'; TEL = 'tel:+14356542983'; EMAIL = 'tacoselguero2llc@gm
 ADDR1 = '281 N Main St'; ADDR2 = 'Heber City, UT 84032'
 LEGAL = 'Tacos El Guero 2 LLC'  # footer on the live site reads "TACOS EL GUERO 2LLc"; confirm the exact name
 Q = 'Tacos+El+Guero+281+N+Main+St+Heber+City+UT+84032'
+DOORDASH = 'https://www.doordash.com/store/el-guero-heber-city-2142428/'
 MAPS = f'https://www.google.com/maps/search/?api=1&query={Q}'; DIRS = f'https://www.google.com/maps/dir/?api=1&destination={Q}'
 HOURS = [('Monday', '9:00 AM - 9:00 PM'), ('Tuesday', '9:00 AM - 9:00 PM'), ('Wednesday', '9:00 AM - 9:00 PM'), ('Thursday', '9:00 AM - 9:00 PM'), ('Friday', '9:00 AM - 9:00 PM'), ('Saturday', '9:00 AM - 9:00 PM'), ('Sunday', '10:00 AM - 9:00 PM')]
 NAV = [('Menu', '/menu'), ('Our Story', '/story'), ('Events', '/events'), ("We're Hiring", '/careers'), ('Gift Cards', '/gift-cards')]
@@ -153,12 +154,12 @@ REVIEWS = [('Craig B.', 'Amazing Mexican food restaurant in the middle of Heber 
 KNOWN = 'Chimichanga, Breakfast, Breakfast Burrito, Tacos, Tex Mex, Chicken Tenders, Churros, Ceviche, Carne Asada, Guacamole, Milanesa, Quesadilla, Tortas, Menudo, Seafood, Latin America Food, Mexican Rice, Flour Tortillas, Quesabirria Tacos, Birria Burritos, Cheeseburger, Burritos, Fast Food, Eggs, Huevos Rancheros, Fries, Carnitas, Chilaquiles, Enchiladas, Nachos, Taco Salad, Pozole, Flan, Birria, Quesabirria, Ceviche Tostada, and Tostadas'
 HOME_FAQ = [('What are you known for?', f'We are known for {KNOWN}.'),
  ('What meals do you serve?', 'We serve breakfast, lunch, and dinner. Breakfast is served all day.'),
- ('Do you offer delivery or takeout?', f'Yes, we offer takeout. <a href="/menu">Order online for pickup</a> or call us at <a href="{TEL}">{PHONE}</a>.'),
+ ('Do you offer delivery or takeout?', f'Yes. <a href="/menu">Order online for pickup</a>, get delivery through <a href="{DOORDASH}" rel="noopener">DoorDash</a>, or call us at <a href="{TEL}">{PHONE}</a>.'),
  ('Where are you located?', f'We are located in Heber City, UT at {addr(ADDR1)}.'),
  ('What areas do you serve?', 'We serve the following areas: Heber City, Heber, Daniel, Midway, Center Creek, Interlaken, Charleston, Mound City, Jordanelle, Hailstone, Cranmer, Keetley, Wallsburg, Timber Lakes, Hideout, Independence, Francis, Park City, and Woodland.'),
  ('Anything else?', 'We are also known for being a family friendly restaurant.')]
 FEATURED = ['Egg Platter (Mexican Style)', 'Taco', 'Chimichanga', 'Quesadilla', '(3) Quesabirria Tacos with Consome', 'Burrito']
-STRIP = ['Breakfast Served All Day', 'Healthy Options', 'Easy Parking', 'Order Online for Pickup', 'Family Owned on Main Street']
+STRIP = ['Breakfast Served All Day', 'Healthy Options', 'Easy Parking', 'Pickup or Delivery', 'Family Owned on Main Street']
 FAMILY = "Jose &amp; Selena started off as a husband and wife team running a local food truck at farmer’s markets. Shortly after, they opened their first restaurant in the heart of Heber City, which outgrew itself quickly. This resulted in the purchase of a larger location where they are now located at."
 GENERATIONS = "Creating a future for their family was the mission behind providing outstanding, authentic Mexican food to the Heber Valley. Jose &amp; Selena’s passion to serve their community while also providing for their family is the heart behind Tacos El Güero."
 GALLERY = [('al-pastor-tacos-onion-cilantro', 'Al pastor street tacos on corn tortillas topped with diced onion and cilantro.'),
@@ -227,7 +228,7 @@ def tags():
         rows = [{'@type': 'MenuItem', 'name': n, 'description': BY[n]['desc'], 'offers': {'@type': 'Offer', 'price': BY[n]['price'].strip('$+'), 'priceCurrency': 'USD'}} for n in its]
         body = phead(h1) + f'<section class="sec"><div class="wrap"><div class="head-row"><h2>Featured</h2>{btn("View menu", "/menu", "ghost")}</div><div class="feats">{"".join(feat(n) for n in FEATURED)}</div></div></section>' \
             + f'<section class="sec"><div class="wrap menu"><h2>{e(h2)}</h2><div class="items">{"".join(card(BY[n]) for n in its)}</div><div class="row" style="margin-top:2rem">{btn("View full menu", "/menu", "ghost")}{order_btn()}</div></div></section>' \
-            + f'<section class="sec alt"><div class="wrap narrow center-t"><h2>{e(dh)}</h2><p>Order online for pickup in Heber City.</p>{order_btn()}</div></section>' + location_block()
+            + f'<section class="sec alt"><div class="wrap narrow center-t"><h2>{e(dh)}</h2><p>Order online for pickup in Heber City, or get delivery through DoorDash.</p><div class="row" style="justify-content:center">{order_btn()}{btn("Delivery on DoorDash", DOORDASH, "ghost", " rel=\"noopener\"")}</div></div></section>' + location_block()
         page('/tags/' + k, t['title'], t['desc'], body, extra_head=ld({'@context': 'https://schema.org', '@type': 'ItemList', 'name': f"{k.replace('-', ' ').title()} at {NAME}", 'numberOfItems': len(rows), 'itemListElement': rows}))
 
 REDIRECTS = [('/login', '/rewards'), ('/account', '/rewards'), ('/download-app', '/'), ('/heber-city', '/'), ('/gift-cards/check', '/gift-cards'), ('/contact', '/questions')]
