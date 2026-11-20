@@ -105,6 +105,75 @@ export const clover = {
   },
 };
 
+// Clover menu: every item and modifier with its sold-out flag (`available: false` = sold out).
+// Pages of 100 until a short page; deleted items are skipped.
+clover.catalog = async (ctx) => {
+  clover.check(ctx.settings, ctx.token);
+  const base = `${cloverBase(ctx.settings)}/v3/merchants/${ctx.settings.merchant_id}`, auth = { Authorization: `Bearer ${ctx.token}` };
+  const all = async (path) => {
+    const out = [];
+    for (let offset = 0; offset < 5000; offset += 100) {
+      const page = (await call(ctx, 'GET', `${base}${path}${path.includes('?') ? '&' : '?'}limit=100&offset=${offset}`, null, auth)).elements || [];
+      out.push(...page);
+      if (page.length < 100) break;
+    }
+    return out.filter((x) => !x.deleted);
+  };
+  const items = (await all('/items')).map((i) => ({ id: i.id, name: i.name || '', available: i.available !== false }));
+  const options = [];
+  for (const g of await all('/modifier_groups?expand=modifiers')) {
+    for (const m of g.modifiers?.elements || []) if (!m.deleted) options.push({ id: m.id, name: m.name || '', available: m.available !== false });
+  }
+  return { items, options };
+};
+
+// ---------- menu sync (any POS that has catalog()) ----------
+// Names are compared loosely: case, accents, punctuation, "(3)" counts and extra spaces don't matter.
+export const normName = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+  .replace(/\(\s*\d+\s*\)/g, ' ').replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim();
+
+// local: { items: [{id, name, available}], options: [{id, name, available}] }
+// links: [{item_id, pos_id, auto, last_pos_available}]; optionStates: { normName: lastSeenAvailable }
+// Returns what to write. A dish or choice only changes when the POS changes, so a sold-out set
+// by hand in our admin isn't undone every 5 minutes.
+export function planSync(local, catalog, links, optionStates = {}) {
+  const posById = new Map(catalog.items.map((i) => [i.id, i]));
+  const posByName = new Map();
+  for (const i of catalog.items) { const k = normName(i.name); posByName.set(k, posByName.has(k) ? null : i); } // null = name used twice
+  const localNames = new Map();
+  for (const i of local.items) { const k = normName(i.name); localNames.set(k, (localNames.get(k) || 0) + 1); }
+  const linkOf = new Map(links.map((l) => [l.item_id, l]));
+  const out = { links: [], items: [], options: [], optionStates: {}, matched: 0, unmatched: [], missing: [] };
+  for (const it of local.items) {
+    let l = linkOf.get(it.id);
+    if (!l || (l.auto && l.pos_id && !posById.has(l.pos_id))) {
+      const k = normName(it.name), hit = localNames.get(k) === 1 ? posByName.get(k) : null;
+      if (l && !hit) { out.links.push({ item_id: it.id, pos_id: null, auto: true, last_pos_available: null, drop: true }); l = null; }
+      if (hit) { l = { item_id: it.id, pos_id: hit.id, auto: true, last_pos_available: null }; out.links.push({ ...l }); }
+    }
+    if (!l) { out.unmatched.push(it.name); continue; }
+    if (!l.pos_id) continue; // staff said it isn't on the POS
+    const p = posById.get(l.pos_id);
+    if (!p) { out.missing.push(it.name); continue; }
+    out.matched++;
+    if (l.last_pos_available !== p.available) {
+      const prev = out.links.find((x) => x.item_id === it.id);
+      if (prev) prev.last_pos_available = p.available; else out.links.push({ item_id: it.id, pos_id: l.pos_id, auto: l.auto, last_pos_available: p.available });
+      if (it.available !== p.available && (l.last_pos_available !== null || !p.available)) out.items.push({ id: it.id, name: it.name, available: p.available });
+    }
+  }
+  // Choices by name: "Asada" sold out on the POS → every "Asada" choice here is sold out.
+  const optAvail = new Map();
+  for (const o of catalog.options) { const k = normName(o.name); optAvail.set(k, (optAvail.get(k) ?? true) && o.available); }
+  for (const [k, avail] of optAvail) {
+    out.optionStates[k] = avail;
+    const before = optionStates[k];
+    if (before === avail || (before === undefined && avail)) continue;
+    for (const o of local.options) if (normName(o.name) === k && o.available !== avail) out.options.push({ id: o.id, name: o.name, available: avail });
+  }
+  return out;
+}
+
 // ---------- Square ----------
 // Orders API + an EXTERNAL payment so the order appears in Square's order manager as paid.
 // Note: Square bills the developer about 1% of external payment amounts.

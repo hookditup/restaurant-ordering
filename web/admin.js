@@ -14,7 +14,7 @@
   let session = keep.get(), r = null, access = [], tab = 'dashboard', days = 30, menu = null, resDay = '', cust = { q: '', seg: 'all', sort: 'last_order', offset: 0 };
   const ALL_TABS = [['dashboard', 'Dashboard'], ['orders', 'Orders'], ['reservations', 'Reservations'], ['messages', 'Messages'], ['customers', 'Customers'], ['campaigns', 'Texts & emails'], ['rewards', 'Rewards'], ['gift', 'Gift cards'], ['menu', 'Menu'], ['choices', 'Choices'], ['pairs', 'Popular and pairings'], ['website', 'Website'], ['marketing', 'Marketing'], ['settings', 'Settings'], ['pos', 'POS & printers'], ['team', 'Team'], ['account', 'My login']];
   const SECTION_NAMES = { kitchen: 'Kitchen screen', dashboard: 'Dashboard', orders: 'Orders', reservations: 'Reservations', messages: 'Messages', customers: 'Customers', campaigns: 'Texts and emails', website: 'Website notices and hours', rewards: 'Rewards', gift: 'Gift cards', menu: 'Menu', choices: 'Choices', pairs: 'Popular and pairings', settings: 'Settings', marketing: 'Marketing', team: 'Team' };
-  const tabs = () => ALL_TABS.filter(([k]) => k === 'account' || r.perms.includes(k === 'pos' ? 'settings' : k));
+  const tabs = () => ALL_TABS.filter(([k]) => (k !== 'reservations' || r.reservations !== false) && (k === 'account' || r.perms.includes(k === 'pos' ? 'settings' : k)));
   const PICK = 'ro-admin-restaurant';
 
   async function refresh() {
@@ -350,14 +350,29 @@
     const tok = (what) => `<label>${what} <input name="token" type="password" autocomplete="new-password" placeholder="${c.has_token ? 'Saved. Leave blank to keep it.' : 'Paste the token'}"${c.id ? '' : ' required'}></label>`;
     if (p === 'clover') return `<label>Merchant ID <input name="merchant_id" value="${esc(s.merchant_id || '')}" required placeholder="13 letters and numbers"></label>${env}${tok('API token')}
       <label>Order type ID (optional) <input name="order_type_id" value="${esc(s.order_type_id || '')}" placeholder="For example, Online Pickup"></label>
-      <label class="a-check"><input type="checkbox" name="print"${s.print !== false ? ' checked' : ''}> Print a kitchen ticket on Clover</label>`;
+      <label class="a-check"><input type="checkbox" name="print"${s.print !== false ? ' checked' : ''}> Print a kitchen ticket on Clover</label>
+      <label class="a-check"><input type="checkbox" name="sync_menu"${s.sync_menu ? ' checked' : ''}> Sold out on Clover = sold out online (checked every 5 minutes)</label>`;
     if (p === 'square') return `<label>Location ID <input name="location_id" value="${esc(s.location_id || '')}" required></label>${env}${tok('Access token')}`;
     return `<label>Paper width <select name="width">${[[32, '58 mm (2 inch)'], [42, '80 mm (3 inch)'], [48, '80 mm, small font']].map(([v, t]) => `<option value="${v}"${+(s.width || 42) === v ? ' selected' : ''}>${t}</option>`).join('')}</select></label>
       <label>Copies <select name="copies">${[1, 2, 3].map((n) => `<option${+(s.copies || 1) === n ? ' selected' : ''}>${n}</option>`).join('')}</select></label>`;
   };
-  const posSettings = (p, x) => (p === 'clover' ? { merchant_id: x.merchant_id.value.trim(), env: x.env.value, order_type_id: x.order_type_id.value.trim(), print: x.print.checked }
+  const posSettings = (p, x) => (p === 'clover' ? { merchant_id: x.merchant_id.value.trim(), env: x.env.value, order_type_id: x.order_type_id.value.trim(), print: x.print.checked, sync_menu: x.sync_menu.checked }
     : p === 'square' ? { location_id: x.location_id.value.trim(), env: x.env.value } : { width: +x.width.value, copies: +x.copies.value });
   const JOB = { pending: 'Waiting', sending: 'Sending', sent: 'Sent', failed: 'Failed', cancelled: 'Cancelled' };
+
+  // Menu sync status and dish matching for a Clover connection.
+  const syncBox = (c) => {
+    const sm = c.sync_summary;
+    const head = c.last_sync_at ? `Last menu sync ${esc(when(c.last_sync_at))}: ${sm.matched} dishes matched, ${sm.unmatched} not matched${sm.missing?.length ? `, ${sm.missing.length} linked to a Clover item that no longer exists` : ''}.` : (c.settings?.sync_menu ? 'Menu sync is on. It runs within 5 minutes, or press Sync sold-out items now.' : 'Menu sync is off.');
+    const changed = sm?.changed?.length ? `<p class="a-help">Last changes: ${esc(sm.changed.join('; '))}</p>` : '';
+    if (!c.catalog.length) return `<p class="a-help">${head}</p>${changed}`;
+    const opts = (l) => `<option value="auto"${l.linked && l.auto ? ' selected' : ''}>${l.linked && l.auto && l.pos_id ? 'Matched automatically' : 'Match automatically'}</option><option value=""${l.linked && !l.auto && !l.pos_id ? ' selected' : ''}>Not on Clover</option>${c.catalog.map((x) => `<option value="${esc(x.id)}"${!l.auto && l.pos_id === x.id ? ' selected' : ''}>${esc(x.name)}</option>`).join('')}`;
+    const rows = c.links.map((l) => `<tr><td>${esc(l.item)}</td><td>${l.pos_id ? esc(c.catalog.find((x) => x.id === l.pos_id)?.name || 'Missing on Clover') : (l.linked && !l.auto ? 'Not on Clover' : '<span class="a-bad">Not matched</span>')}</td>
+      <td><select data-poslink="${l.item_id}" data-conn="${c.id}" aria-label="Clover item for ${esc(l.item)}">${opts(l)}</select></td></tr>`).join('');
+    const unmatched = c.links.filter((l) => !l.linked).length;
+    return `<p class="a-help">${head} Dishes are matched to Clover items by name. A choice like "Asada" is sold out here when it is sold out on Clover.</p>${changed}
+      <details><summary>Dish matching${unmatched ? ` (${unmatched} not matched)` : ''}</summary><table class="a-table"><caption class="sr">Online dishes and their Clover items</caption><thead><tr><th scope="col">Online dish</th><th scope="col">Clover item</th><th scope="col">Change</th></tr></thead><tbody>${rows}</tbody></table></details>`;
+  };
 
   async function posView() {
     const d = await rpc('admin_pos', { p_restaurant: r.id });
@@ -373,7 +388,8 @@
         ${c.provider === 'cloudprnt' ? `<p class="a-help">In the printer's web page (type its IP address into a browser), turn on CloudPRNT and set the Server URL to:<br><code>${esc(cfg.url)}/functions/v1/pos?print=${esc(c.print_key)}</code><br>Polling every 5 seconds is fine. Keep this link private: anyone with it can read your tickets.</p>` : ''}
         <form class="a-pos-f" data-id="${c.id}" data-provider="${c.provider}"><div class="a-grid2"><label>Name <input name="name" value="${esc(c.name)}" maxlength="60"></label>${posFields(c.provider, c)}</div>
           <label class="a-check"><input type="checkbox" name="enabled"${c.enabled ? ' checked' : ''}> On</label>
-          <div class="a-btns"><button>Save</button><button type="button" class="a-alt" data-postest="${c.id}">${c.provider === 'cloudprnt' ? 'Print a test ticket' : 'Test connection'}</button></div></form></section>`).join('')}
+          <div class="a-btns"><button>Save</button><button type="button" class="a-alt" data-postest="${c.id}">${c.provider === 'cloudprnt' ? 'Print a test ticket' : 'Test connection'}</button>${c.provider === 'clover' ? `<button type="button" class="a-alt" data-possync="${c.id}">Sync sold-out items now</button>` : ''}</div></form>
+        ${c.provider === 'clover' ? syncBox(c) : ''}</section>`).join('')}
       <details class="a-box"${d.connections.length ? '' : ' open'}><summary>Add a POS or printer</summary>
         <form id="a-pos-new"><label>Type <select name="provider">${Object.entries(POS).map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join('')}</select></label>
           <p class="a-help" id="a-pos-help"></p><div class="a-grid2"><label>Name <input name="name" maxlength="60" placeholder="For example, Kitchen printer"></label><div id="a-pos-fields" class="a-grid2"></div></div>
@@ -398,6 +414,14 @@
       b.disabled = true;
       try { const res = await posFn({ action: 'test', connection_id: b.dataset.postest }); await posView(); say(res.message); } catch (e) { await posView().catch(() => {}); say(e.message, true); }
     }; });
+    v.querySelectorAll('[data-possync]').forEach((b) => { b.onclick = async () => {
+      b.disabled = true; b.textContent = 'Syncing…';
+      try { const res = await posFn({ action: 'sync', connection_id: b.dataset.possync }); await posView(); say(res.message); } catch (e) { await posView().catch(() => {}); say(e.message, true); }
+    }; });
+    v.querySelectorAll('[data-poslink]').forEach((sel) => { sel.onchange = () => attempt(async () => {
+      await rpc('admin_pos_link', { p_restaurant: r.id, p: { connection_id: sel.dataset.conn, item_id: sel.dataset.poslink, pos_id: sel.value === 'auto' ? null : sel.value } });
+      await posView();
+    }, sel.value === 'auto' ? 'Set to match automatically. It updates on the next sync.' : 'Saved.'); });
     v.querySelectorAll('[data-posjob]').forEach((b) => { b.onclick = () => attempt(async () => { await rpc('admin_pos_job', { p_restaurant: r.id, p: { id: b.dataset.posjob, move: b.dataset.move } }); await posView(); }, b.dataset.move === 'retry' ? 'Sending again.' : 'Cancelled.'); });
   }
 
