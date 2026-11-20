@@ -333,6 +333,7 @@
   const POS = {
     clover: { label: 'Clover', help: 'Paid online orders appear on your Clover as open orders at the price the guest paid, and print to your Clover kitchen printer.' },
     square: { label: 'Square', help: 'Paid online orders appear in Square Orders, marked paid. Square charges the app developer about 1% of each online order sent this way; ask us how that is billed before you turn it on.' },
+    toast: { label: 'Toast', help: 'Paid online orders go into Toast as paid takeout orders and print in the kitchen. Toast prices each order itself, so online prices need to match Toast. Toast gives you the API hostname, client ID and secret. Press Test connection to see the takeout and payment type IDs to copy in.' },
     cloudprnt: { label: 'Cloud kitchen printer (Star CloudPRNT)', help: 'Works with any POS, or none. A Star printer with CloudPRNT (for example the mC-Print3 or TSP143IV) prints each paid order.' },
   };
   const posFn = async (body) => {
@@ -352,26 +353,35 @@
       <label>Order type ID (optional) <input name="order_type_id" value="${esc(s.order_type_id || '')}" placeholder="For example, Online Pickup"></label>
       <label class="a-check"><input type="checkbox" name="print"${s.print !== false ? ' checked' : ''}> Print a kitchen ticket on Clover</label>
       <label class="a-check"><input type="checkbox" name="sync_menu"${s.sync_menu ? ' checked' : ''}> Sold out on Clover = sold out online (checked every 5 minutes)</label>`;
+    const sync = (pos) => `<label class="a-check"><input type="checkbox" name="sync_menu"${s.sync_menu ? ' checked' : ''}> Sold out on ${pos} = sold out online (checked every 5 minutes)</label>`;
+    if (p === 'toast') return `<label>API hostname <input name="api_host" value="${esc(s.api_host || '')}" required placeholder="From Toast"></label>
+      <label>Restaurant GUID <input name="restaurant_guid" value="${esc(s.restaurant_guid || '')}" required></label>
+      <label>Client ID <input name="client_id" value="${esc(s.client_id || '')}" required autocomplete="off"></label>${tok('Client secret')}
+      <label>Takeout dining option GUID <input name="dining_option_guid" value="${esc(s.dining_option_guid || '')}" placeholder="Shown by Test connection"></label>
+      <label>Online payment type GUID <input name="payment_type_guid" value="${esc(s.payment_type_guid || '')}" placeholder="Shown by Test connection"></label>${sync('Toast')}`;
     if (p === 'square') return `<label>Location ID <input name="location_id" value="${esc(s.location_id || '')}" required></label>${env}${tok('Access token')}`;
     return `<label>Paper width <select name="width">${[[32, '58 mm (2 inch)'], [42, '80 mm (3 inch)'], [48, '80 mm, small font']].map(([v, t]) => `<option value="${v}"${+(s.width || 42) === v ? ' selected' : ''}>${t}</option>`).join('')}</select></label>
       <label>Copies <select name="copies">${[1, 2, 3].map((n) => `<option${+(s.copies || 1) === n ? ' selected' : ''}>${n}</option>`).join('')}</select></label>`;
   };
   const posSettings = (p, x) => (p === 'clover' ? { merchant_id: x.merchant_id.value.trim(), env: x.env.value, order_type_id: x.order_type_id.value.trim(), print: x.print.checked, sync_menu: x.sync_menu.checked }
+    : p === 'toast' ? { api_host: x.api_host.value.trim(), restaurant_guid: x.restaurant_guid.value.trim(), client_id: x.client_id.value.trim(), dining_option_guid: x.dining_option_guid.value.trim(), payment_type_guid: x.payment_type_guid.value.trim(), sync_menu: x.sync_menu.checked }
     : p === 'square' ? { location_id: x.location_id.value.trim(), env: x.env.value } : { width: +x.width.value, copies: +x.copies.value });
   const JOB = { pending: 'Waiting', sending: 'Sending', sent: 'Sent', failed: 'Failed', cancelled: 'Cancelled' };
 
-  // Menu sync status and dish matching for a Clover connection.
+  // Menu sync status and dish matching (Clover, Toast). Toast also needs the matches to send orders.
+  const MENU_POS = ['clover', 'toast'];
   const syncBox = (c) => {
+    const P = POS[c.provider].label;
     const sm = c.sync_summary;
-    const head = c.last_sync_at ? `Last menu sync ${esc(when(c.last_sync_at))}: ${sm.matched} dishes matched, ${sm.unmatched} not matched${sm.missing?.length ? `, ${sm.missing.length} linked to a Clover item that no longer exists` : ''}.` : (c.settings?.sync_menu ? 'Menu sync is on. It runs within 5 minutes, or press Sync sold-out items now.' : 'Menu sync is off.');
+    const head = c.last_sync_at ? `Last menu sync ${esc(when(c.last_sync_at))}: ${sm.matched} dishes matched, ${sm.unmatched} not matched${sm.missing?.length ? `, ${sm.missing.length} linked to a ${P} item that no longer exists` : ''}.` : (c.settings?.sync_menu ? 'Menu sync is on. It runs within 5 minutes, or press Sync sold-out items now.' : 'Menu sync is off.');
     const changed = sm?.changed?.length ? `<p class="a-help">Last changes: ${esc(sm.changed.join('; '))}</p>` : '';
     if (!c.catalog.length) return `<p class="a-help">${head}</p>${changed}`;
-    const opts = (l) => `<option value="auto"${l.linked && l.auto ? ' selected' : ''}>${l.linked && l.auto && l.pos_id ? 'Matched automatically' : 'Match automatically'}</option><option value=""${l.linked && !l.auto && !l.pos_id ? ' selected' : ''}>Not on Clover</option>${c.catalog.map((x) => `<option value="${esc(x.id)}"${!l.auto && l.pos_id === x.id ? ' selected' : ''}>${esc(x.name)}</option>`).join('')}`;
-    const rows = c.links.map((l) => `<tr><td>${esc(l.item)}</td><td>${l.pos_id ? esc(c.catalog.find((x) => x.id === l.pos_id)?.name || 'Missing on Clover') : (l.linked && !l.auto ? 'Not on Clover' : '<span class="a-bad">Not matched</span>')}</td>
-      <td><select data-poslink="${l.item_id}" data-conn="${c.id}" aria-label="Clover item for ${esc(l.item)}">${opts(l)}</select></td></tr>`).join('');
+    const opts = (l) => `<option value="auto"${l.linked && l.auto ? ' selected' : ''}>${l.linked && l.auto && l.pos_id ? 'Matched automatically' : 'Match automatically'}</option><option value=""${l.linked && !l.auto && !l.pos_id ? ' selected' : ''}>Not on ${P}</option>${c.catalog.map((x) => `<option value="${esc(x.id)}"${!l.auto && l.pos_id === x.id ? ' selected' : ''}>${esc(x.name)}</option>`).join('')}`;
+    const rows = c.links.map((l) => `<tr><td>${esc(l.item)}</td><td>${l.pos_id ? esc(c.catalog.find((x) => x.id === l.pos_id)?.name || `Missing on ${P}`) : (l.linked && !l.auto ? `Not on ${P}` : '<span class="a-bad">Not matched</span>')}</td>
+      <td><select data-poslink="${l.item_id}" data-conn="${c.id}" aria-label="${P} item for ${esc(l.item)}">${opts(l)}</select></td></tr>`).join('');
     const unmatched = c.links.filter((l) => !l.linked).length;
-    return `<p class="a-help">${head} Dishes are matched to Clover items by name. A choice like "Asada" is sold out here when it is sold out on Clover.</p>${changed}
-      <details><summary>Dish matching${unmatched ? ` (${unmatched} not matched)` : ''}</summary><table class="a-table"><caption class="sr">Online dishes and their Clover items</caption><thead><tr><th scope="col">Online dish</th><th scope="col">Clover item</th><th scope="col">Change</th></tr></thead><tbody>${rows}</tbody></table></details>`;
+    return `<p class="a-help">${head} Dishes are matched to ${P} items by name.${c.provider === 'toast' ? ' Toast orders need every dish matched.' : ''} A choice like "Asada" is sold out here when it is sold out on ${P}.</p>${changed}
+      <details><summary>Dish matching${unmatched ? ` (${unmatched} not matched)` : ''}</summary><table class="a-table"><caption class="sr">Online dishes and their ${P} items</caption><thead><tr><th scope="col">Online dish</th><th scope="col">${P} item</th><th scope="col">Change</th></tr></thead><tbody>${rows}</tbody></table></details>`;
   };
 
   async function posView() {
@@ -388,8 +398,8 @@
         ${c.provider === 'cloudprnt' ? `<p class="a-help">In the printer's web page (type its IP address into a browser), turn on CloudPRNT and set the Server URL to:<br><code>${esc(cfg.url)}/functions/v1/pos?print=${esc(c.print_key)}</code><br>Polling every 5 seconds is fine. Keep this link private: anyone with it can read your tickets.</p>` : ''}
         <form class="a-pos-f" data-id="${c.id}" data-provider="${c.provider}"><div class="a-grid2"><label>Name <input name="name" value="${esc(c.name)}" maxlength="60"></label>${posFields(c.provider, c)}</div>
           <label class="a-check"><input type="checkbox" name="enabled"${c.enabled ? ' checked' : ''}> On</label>
-          <div class="a-btns"><button>Save</button><button type="button" class="a-alt" data-postest="${c.id}">${c.provider === 'cloudprnt' ? 'Print a test ticket' : 'Test connection'}</button>${c.provider === 'clover' ? `<button type="button" class="a-alt" data-possync="${c.id}">Sync sold-out items now</button>` : ''}</div></form>
-        ${c.provider === 'clover' ? syncBox(c) : ''}</section>`).join('')}
+          <div class="a-btns"><button>Save</button><button type="button" class="a-alt" data-postest="${c.id}">${c.provider === 'cloudprnt' ? 'Print a test ticket' : 'Test connection'}</button>${MENU_POS.includes(c.provider) ? `<button type="button" class="a-alt" data-possync="${c.id}">Sync sold-out items now</button>` : ''}</div></form>
+        ${MENU_POS.includes(c.provider) ? syncBox(c) : ''}</section>`).join('')}
       <details class="a-box"${d.connections.length ? '' : ' open'}><summary>Add a POS or printer</summary>
         <form id="a-pos-new"><label>Type <select name="provider">${Object.entries(POS).map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join('')}</select></label>
           <p class="a-help" id="a-pos-help"></p><div class="a-grid2"><label>Name <input name="name" maxlength="60" placeholder="For example, Kitchen printer"></label><div id="a-pos-fields" class="a-grid2"></div></div>
