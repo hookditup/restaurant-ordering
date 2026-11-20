@@ -225,6 +225,109 @@ export const square = {
   },
 };
 
+// ---------- Toast ----------
+// Docs: doc.toasttab.com. Access comes from Toast (custom integration for the restaurant's developer, or partner).
+// Toast only takes real Toast menu items and prices them itself, so:
+//   - dishes are matched to Toast items (pos_item_links, same as menu sync); choices are matched by name
+//     inside that Toast item's modifier groups; an unmatched choice goes to the kitchen as a special request
+//   - before sending, Toast prices the order (/orders/v2/prices); if that differs from what the guest paid,
+//     nothing is sent and the admin says why (no half-paid checks)
+//   - payment is an alternative payment type ("Other", e.g. "Online order") set up in Toast
+// settings: api_host (Toast gives it), restaurant_guid, client_id, dining_option_guid, payment_type_guid; token = client secret.
+const toastBase = (s) => `https://${String(s.api_host || '').replace(/^https?:\/\//, '').replace(/\/.*$/, '')}`;
+const dollars = (c) => Math.round(c) / 100;
+const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+async function toastAuth(ctx) {
+  const r = await call(ctx, 'POST', `${toastBase(ctx.settings)}/authentication/v1/authentication/login`, { clientId: ctx.settings.client_id, clientSecret: ctx.token, userAccessType: 'TOAST_MACHINE_CLIENT' });
+  const t = r.token?.accessToken;
+  if (!t) throw new PosError('Toast did not return a login token. Check the client ID and secret.');
+  return { Authorization: `Bearer ${t}`, 'Toast-Restaurant-External-ID': ctx.settings.restaurant_guid };
+}
+// Toast menu → { items: [{id, name, available, group}], options: [{id, name, available}], groupsOf: {itemGuid: [{guid, options: [{guid, name}]}]} }
+async function toastMenu(ctx, h) {
+  const base = toastBase(ctx.settings);
+  const m = await call(ctx, 'GET', `${base}/menus/v2/menus`, null, h);
+  const out = await call(ctx, 'GET', `${base}/stock/v1/inventory`, null, h).catch(() => []); // only lists OUT_OF_STOCK / QUANTITY
+  const soldOut = new Set((Array.isArray(out) ? out : []).filter((x) => x.status === 'OUT_OF_STOCK').map((x) => x.guid));
+  const gRef = m.modifierGroupReferences || {}, oRef = m.modifierOptionReferences || {};
+  const items = [], groupsOf = {}, seen = new Set();
+  const walk = (g) => {
+    for (const it of g.menuItems || []) {
+      if (seen.has(it.guid)) continue;
+      seen.add(it.guid);
+      items.push({ id: it.guid, name: it.name || '', available: !soldOut.has(it.guid), group: g.guid });
+      groupsOf[it.guid] = (it.modifierGroupReferences || []).map((ref) => gRef[ref]).filter(Boolean)
+        .map((mg) => ({ guid: mg.guid, options: (mg.modifierOptionReferences || []).map((r) => oRef[r]).filter(Boolean).map((o) => ({ guid: o.guid, name: o.name || '' })) }));
+    }
+    for (const sub of g.menuGroups || []) walk(sub);
+  };
+  for (const menu of m.menus || []) for (const g of menu.menuGroups || []) walk(g);
+  const options = Object.values(oRef).map((o) => ({ id: o.guid, name: o.name || '', available: !soldOut.has(o.guid) }));
+  return { items, options, groupsOf };
+}
+export const toast = {
+  label: 'Toast',
+  fields: ['api_host', 'restaurant_guid', 'client_id', 'dining_option_guid', 'payment_type_guid'],
+  check(s, token, forOrders = false) {
+    if (!/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(String(s.api_host || '').replace(/^https?:\/\//, '').replace(/\/.*$/, ''))) throw new PosError('Enter the Toast API hostname Toast gave you (sandbox or production).');
+    if (!GUID.test(s.restaurant_guid || '')) throw new PosError('Enter the Toast restaurant GUID (Toast-Restaurant-External-ID).');
+    if (!s.client_id) throw new PosError('Enter the Toast client ID.');
+    if (!token) throw new PosError('Add the Toast client secret.');
+    if (forOrders && !GUID.test(s.dining_option_guid || '')) throw new PosError('Pick the Toast takeout dining option (press Test connection to see them).');
+    if (forOrders && !GUID.test(s.payment_type_guid || '')) throw new PosError('Pick the Toast payment type for online orders (press Test connection to see them).');
+  },
+  // Lists the dining options and payment types so the owner can copy the right GUIDs.
+  async test(ctx) {
+    toast.check(ctx.settings, ctx.token);
+    const h = await toastAuth(ctx), base = toastBase(ctx.settings);
+    const dining = await call(ctx, 'GET', `${base}/config/v2/diningOptions`, null, h);
+    const pay = await call(ctx, 'GET', `${base}/config/v2/alternatePaymentTypes`, null, h);
+    const list = (xs, extra) => (Array.isArray(xs) ? xs : []).map((x) => `${x.name}${extra ? extra(x) : ''} = ${x.guid}`).join('; ') || 'none';
+    return `Connected to Toast. Takeout options: ${list((Array.isArray(dining) ? dining : []).filter((d) => d.behavior === 'TAKE_OUT'))}. Other payment types: ${list(pay)}.`;
+  },
+  async catalog(ctx) {
+    toast.check(ctx.settings, ctx.token);
+    const { items, options } = await toastMenu(ctx, await toastAuth(ctx));
+    return { items, options };
+  },
+  // Builds the Toast order. links: Map(menu_item_id → Toast item guid). Pure, so it can be tested.
+  orderBody(ctx, o, menu, links) {
+    const byId = new Map(menu.items.map((i) => [i.id, i]));
+    const selections = o.items.map((l) => {
+      const guid = links.get(l.menu_item_id), it = guid && byId.get(guid);
+      if (!it) throw new PosError(`"${l.name}" isn't matched to a Toast item. Match it under Dish matching, then press Send again.`);
+      const mods = [], extra = [];
+      for (const opt of l.options || []) {
+        let hit = null;
+        for (const g of menu.groupsOf[guid] || []) { const x = g.options.find((y) => normName(y.name) === normName(opt.name)); if (x) { hit = { guid: x.guid, group: g.guid }; break; } }
+        if (hit) mods.push({ entityType: 'MenuItemSelection', item: { guid: hit.guid }, optionGroup: { guid: hit.group }, quantity: 1 });
+        else extra.push(opt.name);
+      }
+      const note = [extra.length ? extra.join(', ') : '', l.note || ''].filter(Boolean).join(' | ');
+      if (note) mods.push({ entityType: 'MenuItemSelection', selectionType: 'SPECIAL_REQUEST', displayName: note.slice(0, 1000) });
+      return { entityType: 'MenuItemSelection', item: { guid }, itemGroup: { guid: it.group }, quantity: l.qty, modifiers: mods };
+    });
+    const later = Date.parse(o.pickup_at) - Date.now() > 20 * 60000;
+    return {
+      entityType: 'Order', externalId: `online-${o.id}`, diningOption: { guid: ctx.settings.dining_option_guid },
+      ...(later ? { promisedDate: new Date(o.pickup_at).toISOString().replace('Z', '+0000') } : {}),
+      checks: [{ entityType: 'Check', customer: { entityType: 'Customer', firstName: o.first_name || 'Online', lastName: o.last_name || 'Guest', phone: String(o.phone || '').replace(/\D/g, '').slice(-10), email: o.email || '' }, selections }],
+    };
+  },
+  async send(ctx, o) {
+    toast.check(ctx.settings, ctx.token, true);
+    const h = await toastAuth(ctx), base = toastBase(ctx.settings);
+    const menu = await toastMenu(ctx, h);
+    const body = toast.orderBody(ctx, o, menu, ctx.links || new Map());
+    const priced = await call(ctx, 'POST', `${base}/orders/v2/prices`, body, h);
+    const toastTotal = Math.round((priced.checks?.[0]?.totalAmount ?? NaN) * 100), paid = o.total_cents - o.tip_cents;
+    if (toastTotal !== paid) throw new PosError(`Toast prices this order at ${Number.isNaN(toastTotal) ? 'an unknown amount' : money(toastTotal)}; the guest paid ${money(paid)} (before tip). Not sent, so Toast won't show a balance due. It's on the Kitchen screen. Online prices or discounts need to match Toast.`);
+    body.checks[0].payments = [{ type: 'OTHER', otherPayment: { guid: ctx.settings.payment_type_guid }, amount: dollars(paid), tipAmount: dollars(o.tip_cents || 0), amountTendered: dollars(paid) }];
+    const created = await call(ctx, 'POST', `${base}/orders/v2/orders`, body, h);
+    return { external_id: created.guid || null };
+  },
+};
+
 // ---------- Star CloudPRNT (any POS, or none) ----------
 // The printer polls our URL; send() just leaves the job waiting. See the pos function for the protocol.
 export const cloudprnt = {
@@ -235,4 +338,4 @@ export const cloudprnt = {
   async send() { return { external_id: null, waitForPrinter: true }; },
 };
 
-export const PROVIDERS = { clover, square, cloudprnt };
+export const PROVIDERS = { clover, square, toast, cloudprnt };

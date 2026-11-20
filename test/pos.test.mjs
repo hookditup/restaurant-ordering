@@ -146,3 +146,61 @@ test('Clover catalog: pages through items and modifier groups, skips deleted', a
   assert.match(f.calls[1].url, /offset=100$/);
   assert.match(f.calls[2].url, /\/modifier_groups\?expand=modifiers&limit=100&offset=0$/);
 });
+
+// ---------- Toast ----------
+import { toast } from '../supabase/functions/pos/adapters.js';
+const G = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+const toastSettings = { api_host: 'ws-sandbox-api.example.com', restaurant_guid: G(1), client_id: 'cid', dining_option_guid: G(2), payment_type_guid: G(3) };
+const toastMenuJson = {
+  menus: [{ guid: G(10), menuGroups: [{ guid: G(11), menuItems: [{ guid: G(20), name: 'Street Tacos', modifierGroupReferences: [1] }],
+    menuGroups: [{ guid: G(12), menuItems: [{ guid: G(21), name: 'Horchata', modifierGroupReferences: [] }] }] }] }],
+  modifierGroupReferences: { 1: { guid: G(30), name: 'Meat', modifierOptionReferences: [5, 6] } },
+  modifierOptionReferences: { 5: { guid: G(40), name: 'Carne Asada' }, 6: { guid: G(41), name: 'Pastor' } },
+};
+const toastOrder = { ...order, items: [{ ...order.items[0], menu_item_id: 'L1', options: [{ name: 'Carne Asada' }, { name: 'Corn Tortillas' }] }, { ...order.items[1], menu_item_id: 'L2' }] };
+const toastCalls = (priceCents) => [
+  { ok: true, status: 200, json: { token: { accessToken: 'JWT' } } },
+  { ok: true, status: 200, json: toastMenuJson },
+  { ok: true, status: 200, json: [{ guid: G(21), status: 'OUT_OF_STOCK' }] },
+  { ok: true, status: 200, json: { checks: [{ totalAmount: priceCents / 100 }] } },
+  { ok: true, status: 200, json: { guid: 'TOAST-ORDER-1' } },
+];
+
+test('Toast: logs in, prices the order, then sends it with an Other payment and the tip', async () => {
+  const f = fake(toastCalls(2945));
+  const links = new Map([['L1', G(20)], ['L2', G(21)]]);
+  const res = await toast.send({ settings: toastSettings, token: 'secret', http: f.http, links }, toastOrder);
+  assert.equal(res.external_id, 'TOAST-ORDER-1');
+  assert.deepEqual(f.calls.map((c) => `${c.method} ${c.url.replace('https://ws-sandbox-api.example.com', '')}`),
+    ['POST /authentication/v1/authentication/login', 'GET /menus/v2/menus', 'GET /stock/v1/inventory', 'POST /orders/v2/prices', 'POST /orders/v2/orders']);
+  assert.deepEqual(f.calls[0].body, { clientId: 'cid', clientSecret: 'secret', userAccessType: 'TOAST_MACHINE_CLIENT' });
+  assert.equal(f.calls[1].headers.Authorization, 'Bearer JWT');
+  assert.equal(f.calls[1].headers['Toast-Restaurant-External-ID'], G(1));
+  const sent = f.calls[4].body, chk = sent.checks[0], [tacos, drink] = chk.selections;
+  assert.equal(sent.diningOption.guid, G(2));
+  assert.equal(sent.externalId, `online-${order.id}`);
+  assert.deepEqual(chk.customer, { entityType: 'Customer', firstName: 'Ana', lastName: 'Ruiz', phone: '4355550100', email: 'ana@example.com' });
+  assert.deepEqual([tacos.item.guid, tacos.itemGroup.guid, tacos.quantity], [G(20), G(11), 2]);
+  assert.deepEqual(tacos.modifiers[0], { entityType: 'MenuItemSelection', item: { guid: G(40) }, optionGroup: { guid: G(30) }, quantity: 1 });
+  assert.deepEqual(tacos.modifiers[1], { entityType: 'MenuItemSelection', selectionType: 'SPECIAL_REQUEST', displayName: 'Corn Tortillas | No onion' }); // unmatched choice + note reach the kitchen
+  assert.equal(drink.itemGroup.guid, G(12)); // nested menu group
+  assert.equal(f.calls[3].body.checks[0].payments, undefined); // priced before paying
+  assert.deepEqual(chk.payments, [{ type: 'OTHER', otherPayment: { guid: G(3) }, amount: 29.45, tipAmount: 4, amountTendered: 29.45 }]);
+});
+
+test('Toast: refuses when Toast prices differ, and names unmatched dishes', async () => {
+  const f = fake(toastCalls(2999));
+  const links = new Map([['L1', G(20)], ['L2', G(21)]]);
+  await assert.rejects(toast.send({ settings: toastSettings, token: 's', http: f.http, links }, toastOrder), /Toast prices this order at \$29\.99; the guest paid \$29\.45/);
+  assert.equal(f.calls.length, 4); // never posted the order
+  const g = fake(toastCalls(2945));
+  await assert.rejects(toast.send({ settings: toastSettings, token: 's', http: g.http, links: new Map([['L1', G(20)]]) }, toastOrder), /"Horchata" isn't matched to a Toast item/);
+  await assert.rejects(toast.send({ settings: { ...toastSettings, payment_type_guid: '' }, token: 's', http: g.http }, toastOrder), /payment type/);
+});
+
+test('Toast: catalog for menu sync reads sold-out from the stock API', async () => {
+  const f = fake(toastCalls(0));
+  const c = await toast.catalog({ settings: toastSettings, token: 's', http: f.http });
+  assert.deepEqual(c.items.map((i) => [i.name, i.available]), [['Street Tacos', true], ['Horchata', false]]);
+  assert.deepEqual(c.options.map((o) => o.name), ['Carne Asada', 'Pastor']);
+});
