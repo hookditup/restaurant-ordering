@@ -30,11 +30,16 @@ const http = async (method: string, url: string, init: { headers?: Record<string
 };
 
 async function orderFor(id: string) {
-  const [o] = await db(`orders?select=*,restaurant:restaurants(name,timezone),items:order_items(name,qty,unit_price_cents,line_total_cents,options,note)&id=eq.${id}`);
+  const [o] = await db(`orders?select=*,restaurant:restaurants(name,timezone),items:order_items(menu_item_id,name,qty,unit_price_cents,line_total_cents,options,note)&id=eq.${id}`);
   return o;
 }
 async function ctxFor(c: any) {
-  return { settings: c.settings ?? {}, token: c.secret_id ? await rpc('pos_secret', { cid: c.id }) : null, http };
+  const ctx: any = { settings: c.settings ?? {}, token: c.secret_id ? await rpc('pos_secret', { cid: c.id }) : null, http };
+  if (c.provider === 'toast') { // Toast needs to know which Toast item each dish is
+    const links = await db(`pos_item_links?select=item_id,pos_id&connection_id=eq.${c.id}&pos_id=not.is.null`);
+    ctx.links = new Map(links.map((l: any) => [l.item_id, l.pos_id]));
+  }
+  return ctx;
 }
 
 // Back off 1, 5, 15, 60 minutes; give up after 5 tries and show it in the admin.
