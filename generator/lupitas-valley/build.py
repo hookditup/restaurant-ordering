@@ -79,9 +79,7 @@ def page(path, title, desc, body, active='', extra_head='', robots=''):
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="/img/site/favicon.png">
 <link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#931515"><link rel="apple-touch-icon" href="/img/app/app-192.png">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Lora:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="preload" href="/assets/fonts/lora-latin-500-normal.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/assets/site.css">
 <script type="application/ld+json">{schema()}</script>
 {extra_head}<!-- ANALYTICS_HEAD: paste GA4 / Meta Pixel scripts here -->
@@ -126,7 +124,7 @@ def card(i):
     return f'''<article class="item{'' if pic else ' noimg'}" data-item="{e(i['ext'])}"><div class="item-t"><h3>{e(i['name'])}</h3><p>{e(i['desc'])}</p><span class="price">{e(i['price'])}</span></div>{pic}</article>'''
 def feat(n):
     i = BY[n]
-    return f'<a class="feat" href="/menu#{cid(next(c["name"] for c in CATS if i in c["items"]))}">{img(f"/img/menu/{i["img"]}.webp", n, 400, 300)}<span>{e(n)}</span></a>'
+    return f'<a class="feat" href="/menu#{cid(next(c["name"] for c in CATS if i in c["items"]))}">{img(f"/img/menu/{i["img"]}.webp", "", 400, 300)}<span>{e(n)}</span></a>'
 def location_block():
     hours = ''.join(f'<li><span>{d}</span><span>{t}</span></li>' for d, t in HOURS)
     return f'''<section class="sec"><div class="wrap loc"><div><h2>Our location</h2><h3>Lupita's Valley</h3><p>{addr(ADDR1 + '<br>' + ADDR2)}</p>
@@ -367,15 +365,21 @@ def tags():
         body = body.replace('</main>', '') + f'<section class="sec alt"><div class="wrap narrow center-t"><h2>{e(DELIVERY_H2.get(k, "Convenient Delivery and Pickup"))}</h2><p>Order online for delivery or pickup in Heber City.</p>{order_btn()}</div></section>'
         page('/tags/' + k, ti, de, body, extra_head=tag_ld(k.replace('-', ' '), its))
     return all_t
+# Vercel (production): photos cached a week, CSS/JS an hour (file names don't change on edit).
+VERCEL_HEADERS = [{'source': '/img/(.*)', 'headers': [{'key': 'Cache-Control', 'value': 'public, max-age=604800, stale-while-revalidate=86400'}]},
+        {'source': '/assets/(.*)', 'headers': [{'key': 'Cache-Control', 'value': 'public, max-age=3600, stale-while-revalidate=86400'}]},
+        {'source': '/(.*)', 'headers': [{'key': 'X-Content-Type-Options', 'value': 'nosniff'}, {'key': 'Referrer-Policy', 'value': 'strict-origin-when-cross-origin'}]}]
+
 def extras():
     ps = ['/', '/menu', '/catering', '/rewards', '/questions', '/page/parties', '/page/drinks', '/page/our-story', '/gift-cards', '/careers', '/reservations', '/page/pdf-menus', '/page/contact-us', '/privacy', '/terms', '/accessibility'] + ['/tags/' + k for k in list(TAGS) + list(TAGS2)]
     today = datetime.date.today().isoformat()
     sm = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' + ''.join(f'<url><loc>{DOMAIN}{p}</loc><lastmod>{today}</lastmod></url>\n' for p in ps) + '</urlset>\n'
     open(OUT + '/sitemap.xml', 'w').write(sm)
     open(OUT + '/robots.txt', 'w').write(f'User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /kitchen\nSitemap: {DOMAIN}/sitemap.xml\n')
+    open(OUT + '/robots.live.txt', 'w').write(f'User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /kitchen\nSitemap: {DOMAIN}/sitemap.xml\n')  # launch: copy over robots.txt
     open(OUT + '/llms.txt', 'w', encoding='utf8').write(f"# Lupita's Valley | Mexican restaurant in Heber City, UT\n\nAddress: {ADDR1}, {ADDR2}\nPhone: +14356543465\nHours: Mon-Thu 10:30 AM-9 PM; Fri-Sat 10:30 AM-10 PM; Sun closed\n\n- [Full Menu]({DOMAIN}/menu)\n- [Reservations]({DOMAIN}/reservations)\n- [Catering]({DOMAIN}/catering)\n- [Contact]({DOMAIN}/page/contact-us)\n")
     open(OUT + '/_redirects', 'w').write(''.join(f'{a} {b} 301\n' for a, b in REDIRECTS))
-    json.dump({'cleanUrls': False, 'trailingSlash': False, 'redirects': [{'source': a, 'destination': b, 'permanent': True} for a, b in REDIRECTS]}, open(OUT + '/vercel.json', 'w'), indent=2)
+    json.dump({'cleanUrls': False, 'trailingSlash': False, 'headers': VERCEL_HEADERS, 'redirects': [{'source': a, 'destination': b, 'permanent': True} for a, b in REDIRECTS]}, open(OUT + '/vercel.json', 'w'), indent=2)
     nf = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Page not found | Lupita\'s Valley</title><link rel="stylesheet" href="/assets/site.css"></head><body><main><section class="review"><div class="wrap narrow center-t"><img src="/img/site/logo.png" alt="Lupita\'s Valley" width="257" height="64"><h1>We can\'t find that page</h1><p><a class="btn" href="/">Back to home</a> <a class="btn ghost" href="/menu">View menu</a></p></div></section></main></body></html>'
     open(OUT + '/404.html', 'w', encoding='utf8').write(nf)
     for d in ('menus', 'video'):
@@ -385,6 +389,7 @@ def extras():
     shutil.copytree(os.path.join(HERE, '..', '..', 'web', 'onboarding'), OUT + '/onboarding', dirs_exist_ok=True)
     for fn in ('ordering.js', 'ordering.css', 'order-status.js', 'guest-tools.js', 'reserve.js', 'unsubscribe.js', 'kitchen.js', 'kitchen.css', 'admin.js', 'admin.css'):
         shutil.copy(os.path.join(HERE, '..', '..', 'web', fn), OUT + '/assets/ordering/' + fn)
+    shutil.copytree(HERE + '/src/fonts', OUT + '/assets/fonts', dirs_exist_ok=True)
     os.makedirs(OUT + '/img/app', exist_ok=True)
     for n in (192, 512): shutil.copy(HERE + f'/src/app-{n}.png', OUT + f'/img/app/app-{n}.png')
     shutil.copy(HERE + '/src/sw.js', OUT + '/sw.js')
