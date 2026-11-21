@@ -367,6 +367,11 @@ def tags():
         body = body.replace('</main>', '') + f'<section class="sec alt"><div class="wrap narrow center-t"><h2>{e(DELIVERY_H2.get(k, "Convenient Delivery and Pickup"))}</h2><p>Order online for delivery or pickup in Heber City.</p>{order_btn()}</div></section>'
         page('/tags/' + k, ti, de, body, extra_head=tag_ld(k.replace('-', ' '), its))
     return all_t
+# Vercel (production): photos cached a week, CSS/JS an hour (file names don't change on edit).
+VERCEL_HEADERS = [{'source': '/img/(.*)', 'headers': [{'key': 'Cache-Control', 'value': 'public, max-age=604800, stale-while-revalidate=86400'}]},
+        {'source': '/assets/(.*)', 'headers': [{'key': 'Cache-Control', 'value': 'public, max-age=3600, stale-while-revalidate=86400'}]},
+        {'source': '/(.*)', 'headers': [{'key': 'X-Content-Type-Options', 'value': 'nosniff'}, {'key': 'Referrer-Policy', 'value': 'strict-origin-when-cross-origin'}]}]
+
 def extras():
     ps = ['/', '/menu', '/catering', '/rewards', '/questions', '/page/parties', '/page/drinks', '/page/our-story', '/gift-cards', '/careers', '/reservations', '/page/pdf-menus', '/page/contact-us', '/privacy', '/terms', '/accessibility'] + ['/tags/' + k for k in list(TAGS) + list(TAGS2)]
     today = datetime.date.today().isoformat()
@@ -376,7 +381,7 @@ def extras():
     open(OUT + '/robots.live.txt', 'w').write(f'User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /kitchen\nSitemap: {DOMAIN}/sitemap.xml\n')  # launch: copy over robots.txt
     open(OUT + '/llms.txt', 'w', encoding='utf8').write(f"# Lupita's Valley | Mexican restaurant in Heber City, UT\n\nAddress: {ADDR1}, {ADDR2}\nPhone: +14356543465\nHours: Mon-Thu 10:30 AM-9 PM; Fri-Sat 10:30 AM-10 PM; Sun closed\n\n- [Full Menu]({DOMAIN}/menu)\n- [Reservations]({DOMAIN}/reservations)\n- [Catering]({DOMAIN}/catering)\n- [Contact]({DOMAIN}/page/contact-us)\n")
     open(OUT + '/_redirects', 'w').write(''.join(f'{a} {b} 301\n' for a, b in REDIRECTS))
-    json.dump({'cleanUrls': False, 'trailingSlash': False, 'redirects': [{'source': a, 'destination': b, 'permanent': True} for a, b in REDIRECTS]}, open(OUT + '/vercel.json', 'w'), indent=2)
+    json.dump({'cleanUrls': False, 'trailingSlash': False, 'headers': VERCEL_HEADERS, 'redirects': [{'source': a, 'destination': b, 'permanent': True} for a, b in REDIRECTS]}, open(OUT + '/vercel.json', 'w'), indent=2)
     nf = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Page not found | Lupita\'s Valley</title><link rel="stylesheet" href="/assets/site.css"></head><body><main><section class="review"><div class="wrap narrow center-t"><img src="/img/site/logo.png" alt="Lupita\'s Valley" width="257" height="64"><h1>We can\'t find that page</h1><p><a class="btn" href="/">Back to home</a> <a class="btn ghost" href="/menu">View menu</a></p></div></section></main></body></html>'
     open(OUT + '/404.html', 'w', encoding='utf8').write(nf)
     for d in ('menus', 'video'):
