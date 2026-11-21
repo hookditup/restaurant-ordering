@@ -192,7 +192,8 @@ def home():
 <section class="sec alt"><div class="wrap narrow"><h2>Frequently asked questions</h2>{faq(HOME_FAQ)}<p class="center">{btn('Ask us a question', '/questions', 'ghost')}</p></div></section>
 {location_block()}'''
     plain = lambda t: re.sub(r'<[^>]+>', '', t)
-    extra = '<link rel="preload" as="image" href="/img/site/al-pastor-street-tacos-heber-city.webp">\n' + ld({'@context': 'https://schema.org', '@type': 'FAQPage', 'url': DOMAIN + '/', 'mainEntity': [{'@type': 'Question', 'name': q, 'acceptedAnswer': {'@type': 'Answer', 'text': plain(a)}} for q, a in HOME_FAQ]}) + ld({'@context': 'https://schema.org', '@type': 'WebSite', 'name': NAME, 'url': DOMAIN + '/'})
+    extra = ('<link rel="preload" as="image" href="/img/site/al-pastor-street-tacos-heber-city-800.webp" media="(max-width: 800px)" fetchpriority="high">\n'
+             '<link rel="preload" as="image" href="/img/site/al-pastor-street-tacos-heber-city.webp" media="(min-width: 801px)" fetchpriority="high">\n') + ld({'@context': 'https://schema.org', '@type': 'FAQPage', 'url': DOMAIN + '/', 'mainEntity': [{'@type': 'Question', 'name': q, 'acceptedAnswer': {'@type': 'Answer', 'text': plain(a)}} for q, a in HOME_FAQ]}) + ld({'@context': 'https://schema.org', '@type': 'WebSite', 'name': NAME, 'url': DOMAIN + '/'})
     page('/', 'Best Mexican Food in Heber City, UT | Tacos El Guero #1 - Heber City | Mexican Food near me', 'Tacos El Guero #1 - Heber City: the best Mexican Food in Heber City, UT. Order directly online today for takeout or delivery. Save money, support local business!', body, extra_head=extra)
 
 def menu():
@@ -271,6 +272,11 @@ def build():
     page('/accessibility', f'Accessibility - {NAME}', f'{NAME} accessibility statement.', legal('Accessibility', f'<p>We want everyone to be able to use this website. We work to meet the Web Content Accessibility Guidelines (WCAG) 2.2, Level AA.</p><h2>How we support access</h2><ul><li>Every page works with a keyboard and has a skip link.</li><li>Photos have text descriptions.</li><li>Forms have clear labels and error messages.</li><li>Moving photos have a Pause button and stay still if your device is set to reduce motion.</li></ul><h2>Need help or have feedback?</h2><p>Call <a href="{TEL}">{PHONE}</a> or email <a href="mailto:{EMAIL}">{EMAIL}</a> and we will help.</p>'))
     extras()
 
+# Vercel (production): photos cached a week, CSS/JS an hour (file names don't change on edit).
+VERCEL_HEADERS = [{'source': '/img/(.*)', 'headers': [{'key': 'Cache-Control', 'value': 'public, max-age=604800, stale-while-revalidate=86400'}]},
+        {'source': '/assets/(.*)', 'headers': [{'key': 'Cache-Control', 'value': 'public, max-age=3600, stale-while-revalidate=86400'}]},
+        {'source': '/(.*)', 'headers': [{'key': 'X-Content-Type-Options', 'value': 'nosniff'}, {'key': 'Referrer-Policy', 'value': 'strict-origin-when-cross-origin'}]}]
+
 def extras():
     ps = ['/', '/menu', '/story', '/events', '/careers', '/gift-cards', '/rewards', '/questions', '/privacy', '/terms', '/accessibility'] + ['/tags/' + k for k in TAGS]
     today = datetime.date.today().isoformat()
@@ -280,7 +286,7 @@ def extras():
     open(OUT + '/robots.txt', 'w').write('User-agent: *\nDisallow: /\n')
     open(OUT + '/llms.txt', 'w', encoding='utf8').write(f'# {NAME} | Mexican restaurant in Heber City, UT\n\nAddress: {ADDR1}, {ADDR2}\nPhone: +14356542983\nHours: Mon-Sat 9 AM-9 PM; Sun 10 AM-9 PM. Breakfast served all day.\n\n- [Menu and online ordering]({DOMAIN}/menu)\n- [Our story]({DOMAIN}/story)\n- [Gift cards]({DOMAIN}/gift-cards)\n- [Rewards]({DOMAIN}/rewards)\n- [Questions]({DOMAIN}/questions)\n')
     open(OUT + '/_redirects', 'w').write(''.join(f'{a} {b} 301\n' for a, b in REDIRECTS))
-    json.dump({'cleanUrls': False, 'trailingSlash': False, 'redirects': [{'source': a, 'destination': b, 'permanent': True} for a, b in REDIRECTS]}, open(OUT + '/vercel.json', 'w'), indent=2)
+    json.dump({'cleanUrls': False, 'trailingSlash': False, 'headers': VERCEL_HEADERS, 'redirects': [{'source': a, 'destination': b, 'permanent': True} for a, b in REDIRECTS]}, open(OUT + '/vercel.json', 'w'), indent=2)
     open(OUT + '/404.html', 'w', encoding='utf8').write(f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Page not found | {NAME}</title><link rel="stylesheet" href="/assets/site.css"></head><body><main><section class="review"><div class="wrap narrow center-t"><img src="{LOGO}" alt="{NAME}" width="200" height="100"><h1>We can\'t find that page</h1><p><a class="btn" href="/">Back to home</a> <a class="btn ghost" href="/menu">View menu</a></p></div></section></main></body></html>')
     shutil.copytree(os.path.join(ROOT, 'web', 'onboarding'), OUT + '/onboarding', dirs_exist_ok=True)
     for fn in ('ordering.js', 'ordering.css', 'order-status.js', 'guest-tools.js', 'reserve.js', 'unsubscribe.js', 'kitchen.js', 'kitchen.css', 'admin.js', 'admin.css'):
