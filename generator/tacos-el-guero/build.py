@@ -71,9 +71,7 @@ def page(path, title, desc, body, active='', extra_head='', robots='', og='tacos
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="/img/site/tacos-el-guero-favicon.png">
 <link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#b3261e"><link rel="apple-touch-icon" href="/img/app/app-192.png">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Rubik:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="preload" href="/assets/fonts/rubik-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/assets/site.css">
 {ld(schema())}{extra_head}<!-- ANALYTICS_HEAD: paste GA4 / Meta Pixel scripts here -->
 </head>
@@ -291,6 +289,7 @@ def extras():
     shutil.copytree(os.path.join(ROOT, 'web', 'onboarding'), OUT + '/onboarding', dirs_exist_ok=True)
     for fn in ('ordering.js', 'ordering.css', 'order-status.js', 'guest-tools.js', 'reserve.js', 'unsubscribe.js', 'kitchen.js', 'kitchen.css', 'admin.js', 'admin.css'):
         shutil.copy(os.path.join(ROOT, 'web', fn), OUT + '/assets/ordering/' + fn)
+    shutil.copytree(HERE + '/src/fonts', OUT + '/assets/fonts', dirs_exist_ok=True)
     os.makedirs(OUT + '/img/app', exist_ok=True)
     for n in (192, 512): shutil.copy(HERE + f'/src/app-{n}.png', OUT + f'/img/app/app-{n}.png')
     for fn, dest in (('sw.js', 'sw.js'), ('site.css', 'assets/site.css'), ('site.js', 'assets/site.js'), ('config.js', 'assets/config.js')): shutil.copy(HERE + '/src/' + fn, OUT + '/' + dest)
