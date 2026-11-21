@@ -126,7 +126,7 @@ def card(i):
     return f'''<article class="item{'' if pic else ' noimg'}" data-item="{e(i['ext'])}"><div class="item-t"><h3>{e(i['name'])}</h3><p>{e(i['desc'])}</p><span class="price">{e(i['price'])}</span></div>{pic}</article>'''
 def feat(n):
     i = BY[n]
-    return f'<a class="feat" href="/menu#{cid(next(c["name"] for c in CATS if i in c["items"]))}">{img(f"/img/menu/{i["img"]}.webp", n, 400, 300)}<span>{e(n)}</span></a>'
+    return f'<a class="feat" href="/menu#{cid(next(c["name"] for c in CATS if i in c["items"]))}">{img(f"/img/menu/{i["img"]}.webp", "", 400, 300)}<span>{e(n)}</span></a>'
 def location_block():
     hours = ''.join(f'<li><span>{d}</span><span>{t}</span></li>' for d, t in HOURS)
     return f'''<section class="sec"><div class="wrap loc"><div><h2>Our location</h2><h3>Lupita's Valley</h3><p>{addr(ADDR1 + '<br>' + ADDR2)}</p>
@@ -373,6 +373,7 @@ def extras():
     sm = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' + ''.join(f'<url><loc>{DOMAIN}{p}</loc><lastmod>{today}</lastmod></url>\n' for p in ps) + '</urlset>\n'
     open(OUT + '/sitemap.xml', 'w').write(sm)
     open(OUT + '/robots.txt', 'w').write(f'User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /kitchen\nSitemap: {DOMAIN}/sitemap.xml\n')
+    open(OUT + '/robots.live.txt', 'w').write(f'User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /kitchen\nSitemap: {DOMAIN}/sitemap.xml\n')  # launch: copy over robots.txt
     open(OUT + '/llms.txt', 'w', encoding='utf8').write(f"# Lupita's Valley | Mexican restaurant in Heber City, UT\n\nAddress: {ADDR1}, {ADDR2}\nPhone: +14356543465\nHours: Mon-Thu 10:30 AM-9 PM; Fri-Sat 10:30 AM-10 PM; Sun closed\n\n- [Full Menu]({DOMAIN}/menu)\n- [Reservations]({DOMAIN}/reservations)\n- [Catering]({DOMAIN}/catering)\n- [Contact]({DOMAIN}/page/contact-us)\n")
     open(OUT + '/_redirects', 'w').write(''.join(f'{a} {b} 301\n' for a, b in REDIRECTS))
     json.dump({'cleanUrls': False, 'trailingSlash': False, 'redirects': [{'source': a, 'destination': b, 'permanent': True} for a, b in REDIRECTS]}, open(OUT + '/vercel.json', 'w'), indent=2)
