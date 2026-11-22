@@ -1,7 +1,7 @@
 // Online ordering API. One function, several actions (POST JSON { action, ... }):
 //   slots      guest: pickup times
 //   quote      guest: price a cart on the server
-//   checkout   guest: create the order and a Stripe Checkout page
+//   checkout   guest: create the order and a payment page (Stripe, or the restaurant's own processor)
 //   status     guest: order progress by private token
 //   kitchen    staff: accept | ready | complete | cancel an order
 //   pause      staff: stop or resume taking orders
@@ -10,10 +10,12 @@
 //   rewards_info, rewards_check, gift_buy, gift_view, gift_check   guest
 //   staff      staff: reservations, messages, rewards and gift cards
 //   ?hook=stripe  Stripe webhook
+//   /ordering/pay/<authorizenet|clover|square>/<restaurant id>   that restaurant's processor webhook (payments.js)
 // Secrets: STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, RESEND_API_KEY, EMAIL_FROM,
 //   DOORDASH_DEVELOPER_ID, DOORDASH_KEY_ID, DOORDASH_SIGNING_SECRET (DoorDash Drive),
 //   ATTRIBUTION_URL + ATTRIBUTION_KEYS (marketing attribution; JSON map of restaurant slug -> API key).
 // With no Stripe key, a restaurant in test mode marks orders as test-paid. Live mode never does.
+import { PayError, PROCESSORS } from './payments.js';
 import { addressLine, applyGift, cleanAddress, cleanCode, cleanGuest, makeCode, NEXT, normPhone, OrderError, pickupSlots, priceCart, promoDiscount, totals, validPickup, windowsFor } from './core.js';
 
 const SB_URL = Deno.env.get('SUPABASE_URL')!;
@@ -183,6 +185,115 @@ async function stripeSignatureOk(raw: string, header: string) {
   return diff === 0;
 }
 
+// ---------- the restaurant's own card processor (payments.js) ----------
+async function http(method: string, url: string, init: { headers?: Record<string, string>; body?: string } = {}) {
+  const r = await fetch(url, { method, headers: init.headers, body: init.body, signal: AbortSignal.timeout(20000) });
+  return { ok: r.ok, status: r.status, text: await r.text() };
+}
+const hookUrl = (provider: string, rid: string) => `${SB_URL}/functions/v1/ordering/pay/${provider}/${rid}`;
+/** null = Stripe (the default). Otherwise the processor and its keys; ctx is null when no key is saved yet. */
+async function payFor(restaurantId: string) {
+  const [p] = await db(`payment_settings?select=provider,env,settings&restaurant_id=eq.${restaurantId}`);
+  if (!p || p.provider === 'stripe' || !PROCESSORS[p.provider as keyof typeof PROCESSORS]) return null;
+  const sec = JSON.parse((await rpc('payment_secret', { rid: restaurantId })) || '{}');
+  const ctx = sec.key ? { settings: p.settings ?? {}, env: p.env, key: sec.key, hook_key: sec.hook_key ?? '', http, hook_url: hookUrl(p.provider, restaurantId) } : null;
+  return { provider: p.provider as keyof typeof PROCESSORS, ctx };
+}
+const payNote = (restaurantId: string, ok: boolean, error?: unknown) =>
+  patch('payment_settings', `restaurant_id=eq.${restaurantId}`, ok ? { last_ok_at: new Date().toISOString(), last_error: null } : { last_error: String(error).slice(0, 300) }).catch(() => null);
+
+/** Start the processor's payment page. Guests see a plain message if the processor fails. */
+type PayPage = { session: string; ref?: string; redirect?: string; post?: { url: string; fields: Record<string, string> } };
+async function startPayment(pay: any, restaurantId: string, p: any): Promise<PayPage> {
+  try {
+    const out: PayPage = await PROCESSORS[pay.provider as keyof typeof PROCESSORS].checkout(pay.ctx, p);
+    await payNote(restaurantId, true);
+    return out;
+  } catch (e) {
+    console.error('payment page', pay.provider, e instanceof Error ? e.message : e);
+    await payNote(restaurantId, false, e instanceof Error ? e.message : e);
+    throw new OrderError("Card payments aren't working right now. Please try again in a minute or call us.");
+  }
+}
+
+/** Mark an order or gift card paid once the processor says so (from a webhook, the status page or the sweep). */
+async function settleOrder(o: any, res: { paid: boolean; cents?: number; txn?: string } | null) {
+  if (!res?.paid) return false;
+  const due = o.amount_due_cents ?? o.total_cents;
+  if (res.cents != null && res.cents !== due) { await log(o.id, o.payment_provider, 'amount_mismatch', { paid: res.cents, due }); return false; }
+  if (o.status === 'awaiting_payment') { await markPaid(o, 'paid', undefined, res.txn); return true; }
+  if (o.status === 'expired' && !o.payment_ref) {
+    // Paid after the order timed out (credits already released): tell the restaurant instead of silently keeping the money.
+    const rows = await patch('orders', `id=eq.${o.id}&payment_ref=is.null`, { payment_ref: res.txn ?? null });
+    if (rows?.length) {
+      await log(o.id, o.payment_provider, 'paid_after_expiry', { txn: res.txn, cents: res.cents });
+      const [r] = await db(`restaurants?select=name,alert_email&id=eq.${o.restaurant_id}`);
+      await sendEmail(r.alert_email, `Late payment on expired order ${o.order_no}`, `${o.first_name} ${o.last_name} paid ${money(due)} for order ${o.order_no} after it had expired, so it never reached the kitchen. Call them at ${o.phone} to make it, or refund it in your card processor's dashboard.`, o.id);
+    }
+  }
+  return false;
+}
+async function settleGift(card: any, res: { paid: boolean; cents?: number; txn?: string } | null) {
+  if (!res?.paid || card.status !== 'pending') return false;
+  if (res.cents != null && res.cents !== card.initial_cents) { await log(null, card.payment_provider, 'gift_amount_mismatch', { card: card.id, paid: res.cents }); return false; }
+  await activateGift(card, undefined, res.txn);
+  return true;
+}
+/** Ask the processor about one awaiting order or pending gift card. */
+async function checkPayment(kind: 'order' | 'gift', row: any) {
+  const pay = await payFor(row.restaurant_id);
+  if (!pay?.ctx || pay.provider !== row.payment_provider || !row.payment_session) return false;
+  const res = await PROCESSORS[pay.provider].confirm(pay.ctx, { session: row.payment_session, txn: null });
+  return kind === 'order' ? settleOrder(row, res) : settleGift(row, res);
+}
+
+// Processor webhook: POST /functions/v1/ordering/pay/<provider>/<restaurant id>
+async function handlePayHook(req: Request, provider: string, restaurantId: string) {
+  const raw = await req.text();
+  if (!/^[0-9a-f-]{36}$/.test(restaurantId)) return json({ ok: false }, 404);
+  const pay = await payFor(restaurantId);
+  if (!pay?.ctx || pay.provider !== provider) return json({ ok: false }, 404);
+  const P = PROCESSORS[pay.provider];
+  const ev = await P.hook(pay.ctx, raw, req.headers);
+  if (!ev) { console.error('pay hook: bad signature', provider, restaurantId); return json({ ok: false }, 401); }
+  if ((ev as any).ignore) return json({ ok: true });
+  const e = ev as { session?: string; txn?: string; approved?: boolean };
+  const session = e.session ?? '';
+  if (!session) return json({ ok: true });
+  const sel = `payment_provider=eq.${provider}&payment_session=eq.${encodeURIComponent(session)}&restaurant_id=eq.${restaurantId}`;
+  const [o] = await db(`orders?select=*&${sel}`);
+  const [card] = o ? [null] : await db(`gift_cards?select=*&${sel}`);
+  if (!o && !card) return json({ ok: true });
+  const confirmed = await P.confirm(pay.ctx, { session, txn: e.txn ?? null });
+  const res = confirmed ?? (e.approved ? { paid: true, txn: e.txn } : null); // Clover: the signed webhook is the confirmation
+  if (o) await settleOrder(o, res); else await settleGift(card, res);
+  return json({ ok: true });
+}
+
+// Every 5 minutes: confirm payments a webhook missed, and time out abandoned payment pages.
+async function paymentSweep() {
+  const cut = (min: number) => new Date(Date.now() - min * 60000).toISOString();
+  const orders = await db(`orders?select=*&status=eq.awaiting_payment&payment_provider=neq.stripe&created_at=lt.${cut(2)}&order=created_at.asc&limit=100`);
+  const cards = await db(`gift_cards?select=*&status=eq.pending&payment_provider=neq.stripe&payment_session=not.is.null&created_at=lt.${cut(2)}&order=created_at.asc&limit=100`);
+  let paid = 0, expired = 0;
+  for (const [kind, row] of [...orders.map((o: any) => ['order', o]), ...cards.map((c: any) => ['gift', c])] as ['order' | 'gift', any][]) {
+    try {
+      if (await checkPayment(kind, row)) { paid++; continue; }
+      if (row.created_at > cut(45)) continue;
+      const pay = await payFor(row.restaurant_id);
+      if (pay?.ctx && pay.provider === row.payment_provider) await (PROCESSORS[pay.provider] as any).cancel?.(pay.ctx, { session: row.payment_session, ref: row.payment_ref });
+      if (kind === 'order') {
+        const gone = await patch('orders', `id=eq.${row.id}&status=eq.awaiting_payment`, { status: 'expired' });
+        if (gone?.length) { await rpc('order_release_credits', { p_order: row.id }); expired++; }
+      } else {
+        await patch('gift_cards', `id=eq.${row.id}&status=eq.pending`, { status: 'void' });
+        expired++;
+      }
+    } catch (e) { console.error('payment sweep', row.id, e instanceof Error ? e.message : e); }
+  }
+  return { payments_confirmed: paid, payments_expired: expired };
+}
+
 // ---------- DoorDash Drive ----------
 const b64url = (b: Uint8Array) => btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 async function doordashToken() {
@@ -247,9 +358,9 @@ async function dispatchDelivery(o: any) {
   }
 }
 
-async function markPaid(o: any, payment_status: string, intent?: string) {
+async function markPaid(o: any, payment_status: string, intent?: string, ref?: string) {
   const rows = await patch('orders', `id=eq.${o.id}&status=eq.awaiting_payment`, {
-    status: 'new', payment_status, paid_at: new Date().toISOString(), stripe_payment_intent: intent ?? null,
+    status: 'new', payment_status, paid_at: new Date().toISOString(), stripe_payment_intent: intent ?? null, ...(ref ? { payment_ref: ref } : {}),
   });
   if (!rows?.length) return;
   const [r] = await db(`restaurants?select=slug,name,timezone,alert_email,site_url&id=eq.${o.restaurant_id}`);
@@ -399,7 +510,8 @@ async function tick() {
   const rs = await db('restaurants?select=id&active=eq.true');
   let queued = 0;
   for (const r of rs) queued += (await rpc('automations_tick', { rid: r.id }).catch((e) => { console.error(e); return 0; })) ?? 0;
-  return { queued, ...(await sendQueued(null, 300)) };
+  const sweep = await paymentSweep().catch((e) => { console.error('payment sweep', e); return {}; });
+  return { queued, ...sweep, ...(await sendQueued(null, 300)) };
 }
 
 /** Merge fields filled in here for messages sent straight from an event (order ready, welcome). */
@@ -477,6 +589,20 @@ async function handleTwilio(req: Request, rid: string) {
   return twiml();
 }
 
+/** Refund through the restaurant's own processor. Staff see the processor's message if it says no. */
+async function processorRefund(o: any, cents: number, reason: string | null) {
+  if (!o.payment_ref) throw new OrderError('This payment has no processor reference. Refund it in your card processor\'s dashboard.');
+  const pay = await payFor(o.restaurant_id);
+  if (!pay?.ctx || pay.provider !== o.payment_provider) throw new OrderError(`This order was paid through ${o.payment_provider}, which is no longer connected. Refund it in that dashboard.`);
+  try {
+    const res = await PROCESSORS[pay.provider].refund(pay.ctx, { txn: o.payment_ref, cents, charged_cents: o.amount_due_cents ?? o.total_cents, refunded_cents: o.refunded_cents, reason, key: `rf-${o.id.slice(0, 8)}-${o.refunded_cents}-${cents}` });
+    return res.id as string;
+  } catch (e) {
+    if (e instanceof PayError) throw new OrderError(e.message);
+    throw e;
+  }
+}
+
 // Partial or full refund from the admin. Gift card amounts go back to the card.
 async function refundOrder(r: any, me: any, body: any) {
   const [o] = await db(`orders?select=*&order_no=eq.${encodeURIComponent(String(body.order_no ?? ''))}&restaurant_id=eq.${r.id}`);
@@ -486,13 +612,15 @@ async function refundOrder(r: any, me: any, body: any) {
   const cents = Math.round(Number(body.cents));
   if (!Number.isInteger(cents) || cents <= 0) throw new OrderError('Enter an amount to refund.');
   if (cents > paidByCard) throw new OrderError(`You can refund up to ${money(paidByCard)} on this order.`);
-  let stripeId: string | null = null;
-  if (o.payment_status !== 'test_paid' && o.stripe_payment_intent) {
+  let stripeId: string | null = null, providerId: string | null = null;
+  const reason = text(body.reason, 200) || null;
+  if (o.payment_status !== 'test_paid' && o.payment_provider !== 'stripe') {
+    providerId = await processorRefund(o, cents, reason);
+  } else if (o.payment_status !== 'test_paid' && o.stripe_payment_intent) {
     const [x] = await db(`restaurants?select=stripe_account_id&id=eq.${r.id}`);
     stripeId = (await stripe('refunds', { payment_intent: o.stripe_payment_intent, amount: String(cents) }, x.stripe_account_id, `refund-${o.id}-${o.refunded_cents}-${cents}`)).id;
   }
-  const reason = text(body.reason, 200) || null;
-  await insert('refunds', { order_id: o.id, cents, reason, by_name: me.name, stripe_refund_id: stripeId });
+  await insert('refunds', { order_id: o.id, cents, reason, by_name: me.name, stripe_refund_id: stripeId, provider_refund_id: providerId });
   const total = o.refunded_cents + cents;
   await patch('orders', `id=eq.${o.id}`, { refunded_cents: total, payment_status: total >= paidByCard + o.refunded_cents && o.payment_status !== 'test_paid' ? 'refunded' : o.payment_status === 'test_paid' ? 'test_paid' : 'partly_refunded' });
   await log(o.id, 'admin', 'refund', { cents, by: me.name, reason });
@@ -553,8 +681,14 @@ async function checkout(req: Request, body: any) {
     throw e;
   }
 
-  if (!STRIPE) {
-    if (!r.test_mode) throw new Error('Stripe is not configured for a live restaurant.');
+  const pay = await payFor(r.id);
+  const unpaid = async (e: unknown) => {
+    await patch('orders', `id=eq.${o.id}`, { status: 'expired' });
+    await rpc('order_release_credits', { p_order: o.id });
+    throw e;
+  };
+  if (pay ? !pay.ctx : !STRIPE) {
+    if (!r.test_mode) await unpaid(new OrderError("Card payments aren't set up yet. Please call us to order."));
     await markPaid(o, 'test_paid');
     return json({ ok: true, order_no: o.order_no, token: o.token, redirect: status_url, test: true });
   }
@@ -563,6 +697,14 @@ async function checkout(req: Request, body: any) {
     return json({ ok: true, order_no: o.order_no, token: o.token, redirect: status_url });
   }
   const origin = /^https:\/\//.test(String(body.return_url ?? '')) ? String(body.return_url).replace(/\/$/, '') : full.site_url;
+  if (pay) {
+    const page = await startPayment(pay, r.id, {
+      cents: c.amount_due_cents, name: `${r.name} order ${o.order_no}`, email: guest.email, first_name: guest.first_name, last_name: guest.last_name,
+      ref: o.id, success_url: `${origin}/order/?t=${o.token}`, cancel_url: `${origin}/menu/?cancelled=1`,
+    }).catch(unpaid);
+    await patch('orders', `id=eq.${o.id}`, { payment_provider: pay.provider, payment_session: page.session, payment_ref: page.ref ?? null });
+    return json({ ok: true, order_no: o.order_no, token: o.token, redirect: page.redirect, post: page.post });
+  }
   const session = await stripe('checkout/sessions', {
     mode: 'payment',
     'line_items[0][quantity]': '1',
@@ -732,8 +874,8 @@ async function resInfo(body: any) {
 }
 
 // ---------- gift cards ----------
-async function activateGift(card: any, intent?: string) {
-  const rows = await patch('gift_cards', `id=eq.${card.id}&status=eq.pending`, { status: 'active', balance_cents: card.initial_cents, activated_at: new Date().toISOString(), stripe_payment_intent: intent ?? null });
+async function activateGift(card: any, intent?: string, ref?: string) {
+  const rows = await patch('gift_cards', `id=eq.${card.id}&status=eq.pending`, { status: 'active', balance_cents: card.initial_cents, activated_at: new Date().toISOString(), stripe_payment_intent: intent ?? null, ...(ref ? { payment_ref: ref } : {}) });
   if (!rows?.length) return;
   await insert('gift_card_events', { gift_card_id: card.id, cents: card.initial_cents, reason: 'purchased', by_name: card.source });
   const [r] = await db(`restaurants?select=name,site_url,forms_email&id=eq.${card.restaurant_id}`);
@@ -754,13 +896,24 @@ async function giftBuy(req: Request, body: any) {
   if (!buyer_name) throw new OrderError('Please enter your name.');
   if (!validEmail(buyer_email)) throw new OrderError('Please enter a valid email.');
   if (recipient_email && !validEmail(recipient_email)) throw new OrderError("Please check the recipient's email.");
+  const pay = await payFor(r.id);
+  if (pay ? !pay.ctx : !STRIPE) {
+    if (!r.test_mode) throw new OrderError("Gift cards can't be bought online yet. Please call us.");
+  }
   const [card] = await insert('gift_cards', { restaurant_id: r.id, code: makeCode(16), initial_cents: cents, buyer_name, buyer_email, recipient_name: recipient_name || null, recipient_email: recipient_email || null, message: text(body.message, 300) || null, test_mode: r.test_mode });
-  if (!STRIPE) {
-    if (!r.test_mode) throw new Error('Stripe is not configured for a live restaurant.');
+  if (pay ? !pay.ctx : !STRIPE) {
     await activateGift(card);
     return json({ ok: true, token: card.token, test: true });
   }
   const origin = /^https:\/\//.test(String(body.return_url ?? '')) ? String(body.return_url).replace(/\/$/, '') : r.site_url;
+  if (pay) {
+    const page = await startPayment(pay, r.id, {
+      cents, name: `${r.name} gift card`, email: buyer_email, first_name: buyer_name.split(' ')[0], last_name: buyer_name.split(' ').slice(1).join(' '),
+      ref: card.id, success_url: `${origin}/gift-cards/?g=${card.token}`, cancel_url: `${origin}/gift-cards/`,
+    }).catch(async (e) => { await patch('gift_cards', `id=eq.${card.id}`, { status: 'void' }); throw e; });
+    await patch('gift_cards', `id=eq.${card.id}`, { payment_provider: pay.provider, payment_session: page.session, payment_ref: page.ref ?? null });
+    return json({ ok: true, token: card.token, redirect: page.redirect, post: page.post });
+  }
   const session = await stripe('checkout/sessions', {
     mode: 'payment',
     'line_items[0][quantity]': '1',
@@ -786,7 +939,7 @@ async function staffTools(req: Request, body: any) {
   const SECTION: Record<string, string> = {
     reservations: 'reservations', reservation: 'reservations', messages: 'messages', message: 'messages',
     rewards_find: 'rewards', rewards_adjust: 'rewards', gift_find: 'gift', gift_redeem: 'gift', gift_issue: 'gift',
-    refund: 'orders', res_status: 'reservations', msg_settings: 'settings', msg_test: 'campaigns', campaign_send: 'campaigns', message_customer: 'customers',
+    refund: 'orders', pay_test: 'settings', res_status: 'reservations', msg_settings: 'settings', msg_test: 'campaigns', campaign_send: 'campaigns', message_customer: 'customers',
     team_list: 'team', team_save: 'team', team_remove: 'team',
     mkt_report: 'marketing', mkt_campaigns: 'marketing', mkt_link: 'marketing', mkt_spend: 'marketing',
   };
@@ -821,6 +974,20 @@ async function staffTools(req: Request, body: any) {
       return json({ ok: true, status: to });
     }
     case 'refund': return await refundOrder(r, me, body);
+    case 'pay_test': {
+      const pay = await payFor(r.id);
+      if (!pay) return json({ ok: true, message: STRIPE ? 'Using Stripe.' : 'Stripe is not set up yet.' });
+      if (!pay.ctx) throw new OrderError('Save the key first.');
+      try {
+        const message = await PROCESSORS[pay.provider].test(pay.ctx);
+        await payNote(r.id, true);
+        return json({ ok: true, message });
+      } catch (e) {
+        await payNote(r.id, false, e instanceof Error ? e.message : e);
+        if (e instanceof PayError) throw new OrderError(e.message);
+        throw e;
+      }
+    }
     case 'res_status': {
       const to = { seated: 'seated', no_show: 'no_show' }[String(body.move)];
       if (!to) throw new OrderError('Unknown action.');
@@ -1005,7 +1172,15 @@ async function kitchen(req: Request, body: any) {
       await doordash(`deliveries/${o.delivery_id}/cancel`, 'PUT').catch((e) => log(o.id, 'doordash', 'cancel_failed', { error: String(e) }));
       up.delivery_status = 'cancelled';
     }
-    if (o.payment_status === 'paid' && o.stripe_payment_intent) {
+    if (o.payment_status === 'paid' && o.payment_provider !== 'stripe') {
+      const left = (o.amount_due_cents ?? o.total_cents) - o.refunded_cents;
+      if (left > 0) {
+        const id = await processorRefund(o, left, up.cancel_reason as string);
+        await insert('refunds', { order_id: o.id, cents: left, reason: up.cancel_reason, by_name: staff.name, provider_refund_id: id });
+        up.refunded_cents = o.refunded_cents + left;
+      }
+      up.payment_status = 'refunded';
+    } else if (o.payment_status === 'paid' && o.stripe_payment_intent) {
       const [res] = await db(`restaurants?select=stripe_account_id&id=eq.${o.restaurant_id}`);
       await stripe('refunds', { payment_intent: o.stripe_payment_intent }, res.stripe_account_id, `refund-${o.id}`);
       up.payment_status = 'refunded';
@@ -1036,7 +1211,9 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ ok: false, error: 'POST only' }, 405);
   try {
-    const qs = new URL(req.url).searchParams;
+    const url = new URL(req.url), qs = url.searchParams;
+    const payHook = url.pathname.match(/\/pay\/(authorizenet|clover|square)\/([0-9a-f-]{36})\/?$/);
+    if (payHook) return await handlePayHook(req, payHook[1], payHook[2]);
     if (qs.get('hook') === 'stripe') return await handleStripeHook(req);
     if (qs.get('hook') === 'twilio') return await handleTwilio(req, qs.get('r') ?? '');
     if (qs.get('unsub')) {
@@ -1074,6 +1251,8 @@ Deno.serve(async (req) => {
       case 'status': {
         const token = String(body.token ?? '').replace(/[^a-f0-9]/g, '');
         if (!token) return json({ ok: false, error: 'Order not found.' }, 404);
+        const [w] = await db(`orders?select=*&token=eq.${token}&status=eq.awaiting_payment&payment_provider=neq.stripe`);
+        if (w && (await rpc('rate_limit', { p_key: `paycheck:${w.id}`, p_max: 1, p_seconds: 8 }))) await checkPayment('order', w).catch((e) => console.error('pay check', e instanceof Error ? e.message : e));
         const rows = await db(`orders?select=order_no,status,payment_status,pickup_at,first_name,subtotal_cents,discount_cents,gift_applied_cents,amount_due_cents,delivery_fee_cents,fulfillment,delivery_address,delivery_tracking_url,delivery_status,tax_cents,guest_fee_cents,tip_cents,total_cents,test_mode,cancel_reason,restaurant:restaurants(name,phone,address,timezone),items:order_items(name,qty,line_total_cents,options,note,menu_item_id,option_ids)&token=eq.${token}`);
         return rows?.[0] ? json({ ok: true, order: rows[0] }) : json({ ok: false, error: 'Order not found.' }, 404);
       }
@@ -1128,6 +1307,8 @@ Deno.serve(async (req) => {
         return await giftBuy(req, body);
       case 'gift_view': {
         const token = String(body.token ?? '').replace(/[^a-f0-9]/g, '');
+        const [w] = token ? await db(`gift_cards?select=*&token=eq.${token}&status=eq.pending&payment_provider=neq.stripe`) : [];
+        if (w && (await rpc('rate_limit', { p_key: `paycheck:${w.id}`, p_max: 1, p_seconds: 8 }))) await checkPayment('gift', w).catch((e) => console.error('pay check', e instanceof Error ? e.message : e));
         const rows = token ? await db(`gift_cards?select=code,status,initial_cents,balance_cents,recipient_name,test_mode&token=eq.${token}`) : [];
         return rows?.[0] ? json({ ok: true, card: rows[0] }) : json({ ok: false, error: 'Gift card not found.' }, 404);
       }
@@ -1152,6 +1333,7 @@ Deno.serve(async (req) => {
     }
   } catch (e) {
     if (e instanceof OrderError) return json({ ok: false, error: e.message });
+    if (e instanceof PayError) return json({ ok: false, error: e.message });
     console.error(e instanceof Error ? e.message : e);
     return json({ ok: false, error: 'Something went wrong. Please try again or call us.' }, 500);
   }

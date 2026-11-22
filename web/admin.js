@@ -12,9 +12,9 @@
     set(v) { try { v ? localStorage.setItem(KEY, JSON.stringify(v)) : localStorage.removeItem(KEY); } catch { /* signs in again next load */ } },
   };
   let session = keep.get(), r = null, access = [], tab = 'dashboard', days = 30, menu = null, resDay = '', cust = { q: '', seg: 'all', sort: 'last_order', offset: 0 };
-  const ALL_TABS = [['dashboard', 'Dashboard'], ['orders', 'Orders'], ['reservations', 'Reservations'], ['messages', 'Messages'], ['customers', 'Customers'], ['campaigns', 'Texts & emails'], ['rewards', 'Rewards'], ['gift', 'Gift cards'], ['menu', 'Menu'], ['choices', 'Choices'], ['pairs', 'Popular and pairings'], ['website', 'Website'], ['marketing', 'Marketing'], ['settings', 'Settings'], ['pos', 'POS & printers'], ['team', 'Team'], ['account', 'My login']];
+  const ALL_TABS = [['dashboard', 'Dashboard'], ['orders', 'Orders'], ['reservations', 'Reservations'], ['messages', 'Messages'], ['customers', 'Customers'], ['campaigns', 'Texts & emails'], ['rewards', 'Rewards'], ['gift', 'Gift cards'], ['menu', 'Menu'], ['choices', 'Choices'], ['pairs', 'Popular and pairings'], ['website', 'Website'], ['marketing', 'Marketing'], ['settings', 'Settings'], ['pos', 'POS & printers'], ['payments', 'Card payments'], ['team', 'Team'], ['account', 'My login']];
   const SECTION_NAMES = { kitchen: 'Kitchen screen', dashboard: 'Dashboard', orders: 'Orders', reservations: 'Reservations', messages: 'Messages', customers: 'Customers', campaigns: 'Texts and emails', website: 'Website notices and hours', rewards: 'Rewards', gift: 'Gift cards', menu: 'Menu', choices: 'Choices', pairs: 'Popular and pairings', settings: 'Settings', marketing: 'Marketing', team: 'Team' };
-  const tabs = () => ALL_TABS.filter(([k]) => (k !== 'reservations' || r.reservations !== false) && (k === 'account' || r.perms.includes(k === 'pos' ? 'settings' : k)));
+  const tabs = () => ALL_TABS.filter(([k]) => (k !== 'reservations' || r.reservations !== false) && (k === 'account' || r.perms.includes(k === 'pos' || k === 'payments' ? 'settings' : k)));
   const PICK = 'ro-admin-restaurant';
 
   async function refresh() {
@@ -435,8 +435,55 @@
     v.querySelectorAll('[data-posjob]').forEach((b) => { b.onclick = () => attempt(async () => { await rpc('admin_pos_job', { p_restaurant: r.id, p: { id: b.dataset.posjob, move: b.dataset.move } }); await posView(); }, b.dataset.move === 'retry' ? 'Sending again.' : 'Cancelled.'); });
   }
 
+  // ---------- card processor ----------
+  const PAY = {
+    stripe: { label: 'Stripe (default)', help: 'Guests pay on a Stripe checkout page. Payouts go to the Stripe account connected to this restaurant.' },
+    authorizenet: { label: 'Authorize.net', help: "For a restaurant with its own bank merchant account. Guests pay on Authorize.net's secure page; money goes to that merchant account.", fields: [['api_login_id', 'API Login ID']], key: 'Transaction Key', hook: 'Signature Key',
+      where: 'Authorize.net: Account > Settings > API Credentials and Keys (Login ID, Transaction Key, Signature Key). Then Account > Webhooks > Add Endpoint: paste the webhook link, tick "authcapture.created", and set it Active.' },
+    clover: { label: 'Clover', help: "Guests pay on Clover's secure page and the money goes into the restaurant's Clover account, with the restaurant's Clover rates.", fields: [['merchant_id', 'Merchant ID']], key: 'Ecommerce private key', hook: 'Webhook signing secret',
+      where: 'Clover dashboard: Settings > Ecommerce > Ecommerce API Tokens (create one, copy the private key), and turn on Hosted Checkout. Under Hosted Checkout > Webhook, paste the webhook link, press Generate, Save, and copy the signing secret.' },
+    square: { label: 'Square', help: "Guests pay on Square's secure page and the money goes into the restaurant's Square account, with the restaurant's Square rates.", fields: [['location_id', 'Location ID']], key: 'Access token', hook: 'Webhook signature key',
+      where: 'Square Developer Console: open the app, copy the production access token, and the Location ID from Square Dashboard > Locations. Under Webhooks > Subscriptions, add one with the webhook link and the event "payment.updated", then copy its signature key.' },
+  };
+  async function paymentsView() {
+    const d = await rpc('admin_payments', { p_restaurant: r.id });
+    const edit = d.can_edit, hook = (p) => `${cfg.url}/functions/v1/ordering/pay/${p}/${r.id}`;
+    const fields = (p) => {
+      const P = PAY[p];
+      if (!P.fields) return `<p class="a-help">${d.stripe_account ? 'A Stripe account is connected.' : 'No Stripe account is connected yet.'}</p>`;
+      const same = p === d.provider, s = same ? d.settings : {};
+      const secret = (name, label, has) => `<label>${label} <input name="${name}" type="password" autocomplete="new-password" placeholder="${same && has ? 'Saved. Leave blank to keep it.' : 'Paste it here'}"${edit ? '' : ' disabled'}></label>`;
+      return `<div class="a-grid2">${P.fields.map(([k, label]) => `<label>${label} <input name="${k}" value="${esc(s[k] || '')}" autocomplete="off"${edit ? '' : ' disabled'}></label>`).join('')}
+        <label>Account type <select name="env"${edit ? '' : ' disabled'}><option value="production"${same && d.env === 'sandbox' ? '' : ' selected'}>Live</option><option value="sandbox"${same && d.env === 'sandbox' ? ' selected' : ''}>Sandbox (testing)</option></select></label>
+        ${secret('key', P.key, d.has_key)}${secret('hook_key', P.hook, d.has_hook_key)}</div>
+        <p class="a-help">Webhook link (copy into ${P.label}):<br><code>${esc(hook(p))}</code></p><p class="a-help">${esc(P.where)}</p>`;
+    };
+    const status = d.provider === 'stripe' ? '' : d.last_error ? `<p class="a-bad">Problem: ${esc(d.last_error)}</p>` : d.last_ok_at ? `<p>Working. Last success ${esc(when(d.last_ok_at))}</p>` : '<p>Not tested yet.</p>';
+    view().innerHTML = `<p class="a-help">Where online orders and gift cards are paid. Guests always pay on the processor's own secure page; card numbers never touch this site.${d.test_mode ? ' This restaurant is in test mode: until a processor key is saved, orders are marked as test payments.' : ''}</p>
+      <section class="a-box"><h2>Card processor: ${esc(PAY[d.provider].label)}</h2>${status}
+        <form id="a-pay-f"><label>Processor <select name="provider"${edit ? '' : ' disabled'}>${Object.entries(PAY).map(([k, v]) => `<option value="${k}"${k === d.provider ? ' selected' : ''}>${esc(v.label)}</option>`).join('')}</select></label>
+          <p class="a-help" id="a-pay-help"></p><div id="a-pay-fields"></div>
+          <div class="a-btns">${edit ? '<button>Save</button>' : ''}${d.provider !== 'stripe' ? '<button type="button" class="a-alt" id="a-pay-test">Test connection</button>' : ''}</div>
+          ${edit ? '' : "<p class=\"a-help\">Only Hook'd IT Up can change where payments go. Ask us to switch.</p>"}</form></section>`;
+    const v = view(), f = v.querySelector('#a-pay-f');
+    const pick = () => { const p = f.elements.provider.value; v.querySelector('#a-pay-fields').innerHTML = fields(p); v.querySelector('#a-pay-help').textContent = PAY[p].help; };
+    f.elements.provider.onchange = pick; pick();
+    f.onsubmit = (e) => { e.preventDefault(); const x = f.elements, p = x.provider.value; attempt(async () => {
+      if (p !== 'stripe' && p !== d.provider && !x.key.value.trim()) throw new Error(`Paste the ${PAY[p].key}.`);
+      const settings = Object.fromEntries((PAY[p].fields || []).map(([k]) => [k, x[k].value.trim()]));
+      await rpc('admin_save_payments', { p_restaurant: r.id, p: { provider: p, env: x.env ? x.env.value : 'production', settings, key: x.key ? x.key.value.trim() : '', hook_key: x.hook_key ? x.hook_key.value.trim() : '' } });
+      await paymentsView();
+    }, p === 'stripe' ? 'Saved. Payments use Stripe.' : 'Saved. Press Test connection to check it.'); };
+    const t = v.querySelector('#a-pay-test');
+    if (t) t.onclick = async () => {
+      t.disabled = true;
+      try { const res = await staff('pay_test'); await paymentsView(); say(res.message); } catch (e) { await paymentsView().catch(() => {}); if (e.message !== 'auth') say(e.message, true); }
+    };
+  }
+
   const views = {
     pos: posView,
+    payments: paymentsView,
     async dashboard() {
       const s = await rpc('admin_stats', { p_restaurant: r.id, p_days: days });
       const avg = s.orders ? s.sales_cents / s.orders : 0;
