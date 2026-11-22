@@ -147,7 +147,7 @@
   };
   const shortDate = (d) => (d ? new Date(d).toLocaleDateString('en-US', { timeZone: r.timezone, month: 'short', day: 'numeric', year: 'numeric' }) : '—');
   const phoneText = (p) => { const d = String(p || '').replace(/\D/g, '').slice(-10); return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : (p || ''); };
-  const SEGMENTS = [['all', 'Everyone'], ['recent', 'Ordered in the last 30 days'], ['lapsed', "Haven't ordered in 45+ days"], ['regulars', 'Regulars (3+ orders)'], ['never_ordered', 'Never ordered online'], ['rewards', 'Rewards members'], ['birthday_month', 'Birthday this month']];
+  const SEGMENTS = [['all', 'Everyone'], ['recent', 'Ordered in the last 30 days'], ['lapsed', "Haven't ordered in 45+ days"], ['regulars', 'Regulars (3+ orders)'], ['never_ordered', 'Never ordered online'], ['rewards', 'Rewards members'], ['accounts', 'Guests with an account'], ['birthday_month', 'Birthday this month']];
   const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
   async function customersView() {

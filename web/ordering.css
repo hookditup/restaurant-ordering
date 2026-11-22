@@ -137,3 +137,17 @@
 .ro-consent-opt input { width: 1.2rem; height: 1.2rem; margin: .1rem 0 0; flex: none; accent-color: var(--ro-accent); }
 .ro-again { margin-top: 1.2rem; }
 .ro-again .ro-add { display: inline-flex; text-decoration: none; }
+/* guest accounts */
+.ro-bar { align-items: flex-end; flex-wrap: wrap; }
+.ro-acctbtn { order: 9; margin-left: auto; min-height: 44px; padding: .5rem 1rem; border: 1px solid var(--ro-line); border-radius: 999px; background: #fff; color: var(--ro-ink); font: 600 .95rem/1 var(--sans, Arial, sans-serif); cursor: pointer; }
+.ro-acctbtn:hover { border-color: var(--ro-accent); }
+.ro-link { background: none; border: 0; padding: 0; color: var(--ro-accent); font: inherit; font-weight: 600; text-decoration: underline; cursor: pointer; min-height: 24px; }
+.ro-signed { margin: 0 0 .6rem; color: var(--ro-mute); }
+.ro-ok { background: #e6f4ea; color: #1e5a2e; padding: .5rem .75rem; border-radius: 8px; font-weight: 600; }
+.ro-acct-box { border-top: 1px solid var(--ro-line); padding-top: .75rem; margin-top: .75rem; }
+.ro-acct-box h3 { margin: 0 0 .5rem; font-size: 1.05rem; }
+.ro-past { list-style: none; margin: 0 0 .5rem; padding: 0; }
+.ro-past li { display: flex; justify-content: space-between; align-items: center; gap: .75rem; padding: .55rem 0; border-bottom: 1px solid var(--ro-line); }
+.ro-past li span { display: block; color: var(--ro-mute); font-size: .875rem; }
+.ro-acct #ro-out { margin-top: 1rem; }
+.ro-join { margin-top: 1rem; color: var(--ro-mute); }

@@ -31,6 +31,9 @@
       <ul class="ro-lines">${o.items.map((i) => `<li><div><strong>${i.qty} × ${esc(i.name)}</strong><span>${esc(i.options.map((x) => x.name).join(', '))}</span>${i.note ? `<span>${esc(i.note)}</span>` : ''}</div><b>${money(i.line_total_cents)}</b></li>`).join('')}</ul>
       <dl class="ro-sum"><dt>Subtotal</dt><dd>${money(o.subtotal_cents)}</dd>${o.discount_cents ? `<dt>Discounts</dt><dd>−${money(o.discount_cents)}</dd>` : ''}${o.guest_fee_cents ? `<dt>Service fee</dt><dd>${money(o.guest_fee_cents)}</dd>` : ''}${o.delivery_fee_cents ? `<dt>Delivery</dt><dd>${money(o.delivery_fee_cents)}</dd>` : ''}<dt>Tax</dt><dd>${money(o.tax_cents)}</dd>${o.tip_cents ? `<dt>Tip</dt><dd>${money(o.tip_cents)}</dd>` : ''}<dt class="ro-total">Total</dt><dd class="ro-total">${money(o.total_cents)}</dd>${o.gift_applied_cents ? `<dt>Gift card</dt><dd>−${money(o.gift_applied_cents)}</dd><dt class="ro-total">Amount due</dt><dd class="ro-total">${money(o.amount_due_cents)}</dd>` : ''}</dl>`;
     if (o.status !== 'awaiting_payment') box.insertAdjacentHTML('beforeend', `<p class="ro-again"><a class="ro-add" href="/menu/?reorder=${encodeURIComponent(token)}">Order this again</a></p>`);
+    // Offer an account (phone + code, no password) to guests who aren't signed in yet.
+    let signedIn = false; try { signedIn = !!localStorage.getItem(`ro-acct-${window.RO.restaurant}`); } catch { /* fine */ }
+    if (o.status !== 'awaiting_payment' && !signedIn && !box.querySelector('.ro-join')) box.insertAdjacentHTML('beforeend', '<p class="ro-join">Save your info for next time and reorder in one tap. <a href="/menu/?account=1">Create an account</a> (no password needed).</p>');
     if (['completed', 'cancelled', 'expired'].includes(o.status)) clearInterval(timer);
   }
   if (!token) { box.innerHTML = '<h1>Order not found</h1>'; return; }

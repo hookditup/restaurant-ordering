@@ -9,6 +9,7 @@
 //   res_info, res_month, res_slots, res_cancel   guest: reservation calendar
 //   rewards_info, rewards_check, gift_buy, gift_view, gift_check   guest
 //   staff      staff: reservations, messages, rewards and gift cards
+//   acct_start, acct_verify, acct_me, acct_update, acct_signout   guest accounts (phone or email + 6-digit code)
 //   ?hook=stripe  Stripe webhook
 //   /ordering/pay/<authorizenet|clover|square>/<restaurant id>   that restaurant's processor webhook (payments.js)
 // Secrets: STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, RESEND_API_KEY, EMAIL_FROM,
@@ -671,6 +672,10 @@ async function checkout(req: Request, body: any) {
   await insert('order_items', lines.map((l) => ({ ...l, order_id: o.id })));
   await log(o.id, 'guest', 'placed', { ip });
   await saveConsent(r.id, { phone: guest.phone, email: guest.email, first_name: guest.first_name, last_name: guest.last_name }, body.consent);
+  if (address && body.session) {
+    const cid = await guestFrom(r.id, body.session).catch(() => null);
+    if (cid) await rememberAddress(cid, address).catch((e) => console.error('address', e));
+  }
   const status_url = `${full.site_url}/order/?t=${o.token}`;
   try {
     if (c.account && (await rpc('rewards_change', { p_account: c.account.id, p_delta: -c.points, p_reason: 'redeemed', p_order: o.id })) === null) throw new OrderError('Your rewards balance changed. Please try again.');
@@ -785,6 +790,117 @@ const rid = async (slug: unknown, fields = 'id') => {
   if (!r) throw new OrderError('Restaurant not found.');
   return r;
 };
+
+// ---------- guest accounts ----------
+// Sign in with a mobile number (or email) and a 6-digit code, like Toast and Owner.com. No passwords.
+// The account is the guest's customers row, so campaigns, rewards and order history line up.
+const sha256 = async (v: string) => hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(v)));
+function loginOf(body: any) {
+  const phone = normPhone(body.phone);
+  if (phone) return { login: phone, kind: 'sms' as const };
+  const email = text(body.email, 120).toLowerCase();
+  if (validEmail(email)) return { login: email, kind: 'email' as const };
+  throw new OrderError(body.email !== undefined ? 'Enter a valid email.' : 'Enter a 10-digit mobile number.');
+}
+
+async function acctStart(req: Request, body: any) {
+  await limited(req, 'acct', 10);
+  const r = await rid(body.restaurant, 'id,name,test_mode');
+  const { login, kind } = loginOf(body);
+  if (!(await rpc('rate_limit', { p_key: `acct:${r.id}:${login}`, p_max: 5, p_seconds: 3600 }))) throw new OrderError('Too many codes. Please wait a few minutes and try again.');
+  const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1000000).padStart(6, '0');
+  await insert('guest_codes', { restaurant_id: r.id, login, code_hash: await sha256(`${r.id}:${login}:${code}`), expires_at: new Date(Date.now() + 10 * 60000).toISOString() });
+  const msg = `${code} is your ${r.name} sign-in code. It expires in 10 minutes.`;
+  if (kind === 'sms') {
+    const cfg = await msgConfig(r.id, new Map());
+    if (cfg.twilio_sid && cfg.token && cfg.sms_from) {
+      try { await twilioSend(cfg, login, msg); return json({ ok: true, sent: 'sms' }); } catch (e) { console.error('acct sms', e instanceof Error ? e.message : e); }
+    }
+    if (r.test_mode) return json({ ok: true, sent: 'test', test_code: code });
+    return json({ ok: false, use_email: true, error: "We can't text a code right now. Use your email instead." });
+  }
+  if (RESEND && FROM) { await sendEmail(login, `Your ${r.name} sign-in code`, `${msg}\n\nIf you didn't ask for this, you can ignore this email.`, null); return json({ ok: true, sent: 'email' }); }
+  if (r.test_mode) return json({ ok: true, sent: 'test', test_code: code });
+  throw new OrderError("We couldn't send a code right now. Please try again later.");
+}
+
+async function acctVerify(req: Request, body: any) {
+  await limited(req, 'acct-verify', 30);
+  const r = await rid(body.restaurant, 'id,name');
+  const { login, kind } = loginOf(body);
+  const code = String(body.code ?? '').replace(/\D/g, '');
+  const [c] = await db(`guest_codes?select=*&restaurant_id=eq.${r.id}&login=eq.${encodeURIComponent(login)}&used_at=is.null&expires_at=gt.${new Date().toISOString()}&order=created_at.desc&limit=1`);
+  if (!c || c.attempts >= 5) throw new OrderError('That code has expired. Ask for a new one.');
+  if (code.length !== 6 || (await sha256(`${r.id}:${login}:${code}`)) !== c.code_hash) {
+    await patch('guest_codes', `id=eq.${c.id}`, { attempts: c.attempts + 1 });
+    throw new OrderError("That code isn't right. Check it and try again.");
+  }
+  const used = await patch('guest_codes', `id=eq.${c.id}&used_at=is.null`, { used_at: new Date().toISOString() });
+  if (!used?.length) throw new OrderError('That code has expired. Ask for a new one.');
+  const cid = await rpc('upsert_customer', { rid: r.id, p: kind === 'sms' ? { phone: login, source: 'account' } : { email: login, source: 'account' } });
+  if (!cid) throw new Error('could not find or create the customer');
+  const fresh = await patch('customers', `id=eq.${cid}&account_at=is.null`, { account_at: new Date().toISOString() });
+  const token = hex(crypto.getRandomValues(new Uint8Array(32)).buffer);
+  await insert('guest_sessions', { token_hash: await sha256(token), restaurant_id: r.id, customer_id: cid, expires_at: new Date(Date.now() + 180 * 86400000).toISOString() });
+  await log(null, 'account', fresh?.length ? 'created' : 'signed_in', { customer: cid, by: kind });
+  return json({ ok: true, session: token, created: !!fresh?.length, profile: await acctProfile(r.id, cid) });
+}
+
+/** The signed-in guest, or null. */
+async function guestFrom(restaurantId: string, token: unknown) {
+  const t = String(token ?? '').replace(/[^a-f0-9]/g, '');
+  if (t.length !== 64) return null;
+  const [s] = await db(`guest_sessions?select=customer_id&token_hash=eq.${await sha256(t)}&restaurant_id=eq.${restaurantId}&expires_at=gt.${new Date().toISOString()}`);
+  return s?.customer_id as string ?? null;
+}
+
+async function acctProfile(restaurantId: string, cid: string) {
+  const [c] = await db(`customers?select=first_name,last_name,phone,email,sms_updates,sms_marketing,sms_stopped_at,email_marketing,addresses&id=eq.${cid}`);
+  const [r] = await db(`restaurants?select=rewards_redeem_points,rewards_redeem_cents&id=eq.${restaurantId}`);
+  const [rw] = await db(`rewards_accounts?select=code,points&restaurant_id=eq.${restaurantId}&or=(customer_id.eq.${cid}${c.phone ? `,phone.eq.${encodeURIComponent(c.phone)}` : ''})&limit=1`);
+  const orders = await db(`orders?select=order_no,created_at,total_cents,status,fulfillment,token,items:order_items(name,qty)&restaurant_id=eq.${restaurantId}&customer_id=eq.${cid}&status=in.(new,accepted,ready,completed)&order=created_at.desc&limit=10`);
+  return {
+    first_name: c.first_name ?? '', last_name: c.last_name ?? '', phone: c.phone ?? '', email: c.email ?? '',
+    sms_updates: c.sms_updates, sms_marketing: c.sms_marketing && !c.sms_stopped_at, email_marketing: c.email_marketing, addresses: c.addresses ?? [],
+    rewards: rw ? { code: rw.code, points: rw.points, redeem_points: r.rewards_redeem_points, redeem_cents: r.rewards_redeem_cents } : null,
+    orders,
+  };
+}
+
+async function acctMe(body: any) {
+  const r = await rid(body.restaurant);
+  const cid = await guestFrom(r.id, body.session);
+  return cid ? json({ ok: true, profile: await acctProfile(r.id, cid) }) : json({ ok: false, signed_out: true });
+}
+
+async function acctUpdate(body: any) {
+  const r = await rid(body.restaurant);
+  const cid = await guestFrom(r.id, body.session);
+  if (!cid) return json({ ok: false, signed_out: true, error: 'Please sign in again.' });
+  const p = body.profile ?? {};
+  const up: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  if (p.first_name !== undefined) up.first_name = text(p.first_name, 40) || null;
+  if (p.last_name !== undefined) up.last_name = text(p.last_name, 40) || null;
+  if (p.email !== undefined) {
+    const em = text(p.email, 120).toLowerCase();
+    if (em && !validEmail(em)) throw new OrderError('Enter a valid email.');
+    up.email = em || null;
+  }
+  if (typeof p.sms_updates === 'boolean') up.sms_updates = p.sms_updates;
+  if (typeof p.sms_marketing === 'boolean') { up.sms_marketing = p.sms_marketing; if (p.sms_marketing) { up.sms_marketing_at = new Date().toISOString(); up.sms_stopped_at = null; } }
+  if (typeof p.email_marketing === 'boolean') { up.email_marketing = p.email_marketing; up.email_unsub_at = p.email_marketing ? null : new Date().toISOString(); }
+  if (Array.isArray(p.addresses)) up.addresses = p.addresses.slice(0, 5).map((a: any) => ({ ...cleanAddress(a), label: text(a.label, 30) || null }));
+  await patch('customers', `id=eq.${cid}`, up);
+  return json({ ok: true, profile: await acctProfile(r.id, cid) });
+}
+
+/** After a delivery order, keep the address on the guest's account (newest first, up to 5). */
+async function rememberAddress(cid: string, address: any) {
+  const [c] = await db(`customers?select=addresses&id=eq.${cid}`);
+  const key = (a: any) => `${a.street}|${a.unit}|${a.zip}`.toLowerCase();
+  const list = [address, ...(c?.addresses ?? []).filter((a: any) => key(a) !== key(address))].slice(0, 5);
+  await patch('customers', `id=eq.${cid}`, { addresses: list });
+}
 
 // ---------- website forms ----------
 async function rewardsJoin(r: any, d: Record<string, string>) {
@@ -1305,6 +1421,15 @@ Deno.serve(async (req) => {
       }
       case 'gift_buy':
         return await giftBuy(req, body);
+      case 'acct_start': return await acctStart(req, body);
+      case 'acct_verify': return await acctVerify(req, body);
+      case 'acct_me': return await acctMe(body);
+      case 'acct_update': return await acctUpdate(body);
+      case 'acct_signout': {
+        const t = String(body.session ?? '').replace(/[^a-f0-9]/g, '');
+        if (t.length === 64) await db(`guest_sessions?token_hash=eq.${await sha256(t)}`, { method: 'DELETE' });
+        return json({ ok: true });
+      }
       case 'gift_view': {
         const token = String(body.token ?? '').replace(/[^a-f0-9]/g, '');
         const [w] = token ? await db(`gift_cards?select=*&token=eq.${token}&status=eq.pending&payment_provider=neq.stripe`) : [];
