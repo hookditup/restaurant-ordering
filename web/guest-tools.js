@@ -6,6 +6,14 @@
   const money = (c) => `$${(c / 100).toFixed(2)}`;
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const post = (body) => fetch(API, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ restaurant: cfg.restaurant, ...body }) }).then((r) => r.json()).catch(() => ({ ok: false, error: 'Something went wrong. Please try again or call us.' }));
+  // Some card processors (Authorize.net) take the buyer to their page with a form POST instead of a link.
+  const leave = (r, fallback) => {
+    if (!r.post) { location.href = r.redirect || fallback; return; }
+    const f = document.createElement('form');
+    f.method = 'POST'; f.action = r.post.url;
+    for (const [k, v] of Object.entries(r.post.fields || {})) { const i = document.createElement('input'); i.type = 'hidden'; i.name = k; i.value = v; f.append(i); }
+    document.body.append(f); f.submit();
+  };
   const field = (name, label, type = 'text', extra = '') => `<label class="ro-field">${label}<input name="${name}" type="${type}" ${extra}></label>`;
 
   function checker(form, run) {
@@ -53,7 +61,7 @@
       err.textContent = ''; btn.disabled = true;
       const r = await post({ action: 'gift_buy', ...d, amount_cents: Math.round(Number(d.amount) * 100), return_url: location.origin });
       if (!r.ok) { err.textContent = r.error; btn.disabled = false; return; }
-      location.href = r.redirect || `${location.pathname}?g=${r.token}`;
+      leave(r, `${location.pathname}?g=${r.token}`);
     });
     checker(root.querySelector('#ro-gift-check'), async (d) => {
       const r = await post({ action: 'gift_check', code: d.code });

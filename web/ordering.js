@@ -375,6 +375,15 @@
       <dt>Tax</dt><dd>${money(r.tax_cents)}</dd>${r.tip_cents ? `<dt>Tip</dt><dd>${money(r.tip_cents)}</dd>` : ''}<dt class="ro-total">Total</dt><dd class="ro-total">${money(r.total_cents)}</dd>${r.gift_applied_cents ? `<dt>Gift card</dt><dd>−${money(r.gift_applied_cents)}</dd><dt class="ro-total">Amount due</dt><dd class="ro-total">${money(r.amount_due_cents)}</dd>` : ''}`;
   }
 
+  // Some card processors (Authorize.net) take the guest to their page with a form POST instead of a link.
+  const leave = (r, fallback) => {
+    if (!r.post) { location.href = r.redirect || fallback; return; }
+    const f = document.createElement('form');
+    f.method = 'POST'; f.action = r.post.url;
+    for (const [k, v] of Object.entries(r.post.fields || {})) { const i = document.createElement('input'); i.type = 'hidden'; i.name = k; i.value = v; f.append(i); }
+    document.body.append(f); f.submit();
+  };
+
   async function submit(e) {
     e.preventDefault();
     const f = e.target, err = f.querySelector('.ro-err'), btn = f.querySelector('.ro-add');
@@ -389,7 +398,7 @@
     const r = await post({ action: 'checkout', pickup_at: pickup, tip_cents: tip, items: cart, guest, gift_code, rewards_code, promo_code, consent, fulfillment, address: fulfillment === 'delivery' ? addressFrom(val) : undefined, return_url: location.origin, attribution: window.HRA ? window.HRA.get() : undefined }).catch(() => null);
     if (!r?.ok) { err.textContent = r?.error || 'Something went wrong. Please try again or call us.'; btn.disabled = false; return; }
     cart = []; store.set(cart);
-    location.href = r.test ? `/order/?t=${r.token}` : r.redirect;
+    if (r.test) location.href = `/order/?t=${r.token}`; else leave(r, `/order/?t=${r.token}`);
   }
 
   start();
