@@ -87,8 +87,10 @@
       pickup = slots[0] || null;
       for (const c of menu.categories) for (const i of c.items) items.set(i.id, { item: i, category: c });
       cart = cart.filter((l) => items.has(l.id));
+      await loadAccount();
       await reorderFromLink();
       render();
+      if (new URLSearchParams(location.search).get('account')) { history.replaceState(null, '', location.pathname + location.hash); openAccount(); }
       // Photos and fonts can move the page while it loads, so settle on the section again.
       const goTo = () => document.getElementById(location.hash.slice(1))?.scrollIntoView({ behavior: 'instant' });
       if (location.hash) { goTo(); setTimeout(goTo, 600); }
@@ -103,6 +105,9 @@
     const t = new URLSearchParams(location.search).get('reorder');
     if (!t) return;
     history.replaceState(null, '', location.pathname + location.hash);
+    await reorder(t);
+  }
+  async function reorder(t) {
     const r = await post({ action: 'status', token: t }).catch(() => null);
     if (!r?.ok) return;
     let missing = 0;
@@ -130,6 +135,7 @@
     root.innerHTML = `${test}${closed}
       <div class="ro-bar">
         ${canDeliver() ? `<fieldset class="ro-mode"><legend>How would you like your order?</legend>${[['pickup', 'Pickup'], ['delivery', 'Delivery']].map(([v, t]) => `<label><input type="radio" name="ro-mode" value="${v}"${fulfillment === v ? ' checked' : ''}><span>${t}</span></label>`).join('')}</fieldset>` : ''}
+        <button type="button" class="ro-acctbtn" id="ro-acct">${acct ? `Hi, ${esc(acct.first_name || 'there')}` : 'Sign in'}</button>
         <label>${fulfillment === 'delivery' ? 'Delivery time' : 'Pickup time'}
           <select id="ro-time">${slots.map((s) => `<option value="${s}"${s === pickup ? ' selected' : ''}>${esc(slotText(s))}</option>`).join('')}</select>
         </label>
@@ -144,6 +150,7 @@
     root.querySelector('#ro-time').addEventListener('change', (e) => { pickup = e.target.value; render(); });
     root.querySelectorAll('[name=ro-mode]').forEach((r) => r.addEventListener('change', () => setMode(r.value)));
     root.querySelector('#ro-open').addEventListener('click', openCart);
+    root.querySelector('#ro-acct').addEventListener('click', () => openAccount());
     root.querySelectorAll('[data-item]').forEach((b) => b.addEventListener('click', () => openItem(b.dataset.item)));
     updateCartButton();
     watchJump();
@@ -297,6 +304,119 @@
     dialog.scrollTop = 0;
     if (!dialog.open) dialog.showModal();
   }
+  // ----- guest accounts: mobile number (or email) + a 6-digit code, no passwords -----
+  const SESSION = `ro-acct-${cfg.restaurant}`;
+  let acct = null, acctToken = (() => { try { return localStorage.getItem(SESSION); } catch { return null; } })();
+  const saveToken = (t) => { acctToken = t; try { t ? localStorage.setItem(SESSION, t) : localStorage.removeItem(SESSION); } catch { /* signed in for this visit */ } };
+  async function loadAccount() {
+    if (!acctToken) return;
+    const r = await post({ action: 'acct_me', session: acctToken }).catch(() => null);
+    if (r?.ok) setAccount(r.profile); else if (r?.signed_out) saveToken(null);
+  }
+  function setAccount(p) {
+    acct = p;
+    if (!p) return;
+    // Fill checkout from the account (what the guest already typed wins).
+    const nice = (ph) => ph.replace(/^\+1(\d{3})(\d{3})(\d{4})$/, '($1) $2-$3');
+    for (const k of ['first_name', 'last_name', 'phone', 'email']) if (!cartDraft[k] && p[k]) cartDraft[k] = k === 'phone' ? nice(p[k]) : p[k];
+    cartDraft.sms_updates = cartDraft.sms_updates || p.sms_updates;
+  }
+  const accountBack = { fn: null };
+  // Opens the account sheet. done() runs after a successful sign-in (e.g. back to the cart).
+  function openAccount(done, login) {
+    back = null;
+    accountBack.fn = done || null;
+    if (acct) return accountView();
+    signInView(login || {});
+  }
+  function signInView(prefill, step) {
+    const byEmail = !!prefill.byEmail;
+    dialog.innerHTML = `<div class="ro-sheet ro-acct"><button class="ro-x" type="button" aria-label="Close">×</button>
+      <h2>${step ? 'Enter your code' : 'Sign in or create an account'}</h2>
+      ${step ? `<p>We sent a 6-digit code to <strong>${esc(prefill.phone || prefill.email)}</strong>.</p>${prefill.test_code ? `<p class="ro-test">Test mode: your code is <strong>${esc(prefill.test_code)}</strong></p>` : ''}
+        <form id="ro-code" novalidate><label class="ro-field">Code<input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required></label>
+        <p class="ro-err" role="alert"></p><button class="ro-add" type="submit">Sign in</button>
+        <button type="button" class="ro-apply" id="ro-again">Send a new code</button></form>`
+      : `<p>Save your info, see past orders and reorder in one tap. No password needed.</p>
+        <form id="ro-login" novalidate>${byEmail
+          ? `<label class="ro-field">Email<input name="email" type="email" autocomplete="email" required value="${esc(prefill.email || cartDraft.email || '')}"></label>`
+          : `<label class="ro-field">Mobile phone<input name="phone" type="tel" autocomplete="tel" required value="${esc(prefill.phone || cartDraft.phone || '')}"></label>`}
+        <p class="ro-err" role="alert"></p><button class="ro-add" type="submit">${byEmail ? 'Email me a code' : 'Text me a code'}</button>
+        <button type="button" class="ro-apply" id="ro-switch">${byEmail ? 'Use my phone number instead' : 'Use my email instead'}</button>
+        ${byEmail ? '' : '<p class="ro-note">We\'ll text a one-time code. Msg &amp; data rates may apply.</p>'}</form>`}</div>`;
+    dialog.querySelector('.ro-x').onclick = close;
+    const err = dialog.querySelector('.ro-err');
+    const send = async (who) => {
+      const r = await post({ action: 'acct_start', ...who }).catch(() => null);
+      if (r?.ok) return signInView({ ...who, byEmail: !!who.email, test_code: r.test_code }, 'code');
+      if (r?.use_email) return signInView({ byEmail: true, email: cartDraft.email }, null), (dialog.querySelector('.ro-err').textContent = r.error);
+      err.textContent = r?.error || 'Something went wrong. Please try again.';
+    };
+    if (!step) {
+      dialog.querySelector('#ro-switch').onclick = () => signInView({ byEmail: !byEmail });
+      dialog.querySelector('#ro-login').onsubmit = async (e) => {
+        e.preventDefault();
+        const v = (e.target.elements.phone || e.target.elements.email).value.trim();
+        e.target.querySelector('.ro-add').disabled = true;
+        await send(byEmail ? { email: v } : { phone: v });
+        const b = dialog.querySelector('#ro-login .ro-add'); if (b) b.disabled = false;
+      };
+    } else {
+      const who = prefill.email ? { email: prefill.email } : { phone: prefill.phone };
+      dialog.querySelector('#ro-again').onclick = () => send(who);
+      const f = dialog.querySelector('#ro-code');
+      f.elements.code.focus();
+      f.onsubmit = async (e) => {
+        e.preventDefault();
+        f.querySelector('.ro-add').disabled = true;
+        const r = await post({ action: 'acct_verify', ...who, code: f.elements.code.value }).catch(() => null);
+        f.querySelector('.ro-add').disabled = false;
+        if (!r?.ok) { err.textContent = r?.error || 'Something went wrong. Please try again.'; return; }
+        saveToken(r.session); setAccount(r.profile); render();
+        if (accountBack.fn) { const fn = accountBack.fn; accountBack.fn = null; fn(); } else accountView(r.created ? 'Your account is ready.' : '');
+      };
+    }
+    if (!dialog.open) dialog.showModal();
+  }
+  function accountView(msg) {
+    const p = acct, rw = p.rewards, when = (d) => new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    dialog.innerHTML = `<div class="ro-sheet ro-acct"><button class="ro-x" type="button" aria-label="Close">×</button><h2>Your account</h2>
+      ${msg ? `<p class="ro-ok" role="status">${esc(msg)}</p>` : ''}
+      ${rw ? `<section class="ro-acct-box"><h3>Rewards</h3><p><strong>${rw.points}</strong> points. ${rw.points >= rw.redeem_points ? `You have a ${money(rw.redeem_cents)} reward ready to use at checkout.` : `${rw.redeem_points - rw.points} more for a ${money(rw.redeem_cents)} reward.`}</p></section>` : ''}
+      <section class="ro-acct-box"><h3>Past orders</h3>${p.orders.length ? `<ul class="ro-past">${p.orders.map((o) => `<li><div><strong>${esc(when(o.created_at))}</strong> · ${money(o.total_cents)}<span>${esc(o.items.map((i) => `${i.qty} × ${i.name}`).join(', '))}</span></div><button type="button" class="ro-apply" data-again="${esc(o.token)}">Order again</button></li>`).join('')}</ul>` : '<p>Your orders will show up here.</p>'}</section>
+      <form id="ro-prof" class="ro-acct-box" novalidate><h3>Your details</h3>
+        <div class="ro-two"><label class="ro-field">First name<input name="first_name" autocomplete="given-name" value="${esc(p.first_name)}"></label>
+        <label class="ro-field">Last name<input name="last_name" autocomplete="family-name" value="${esc(p.last_name)}"></label></div>
+        ${p.phone ? `<p class="ro-note">Mobile: ${esc(p.phone.replace(/^\+1(\d{3})(\d{3})(\d{4})$/, '($1) $2-$3'))}</p>` : ''}
+        <label class="ro-field">Email<input name="email" type="email" autocomplete="email" value="${esc(p.email)}"></label>
+        <fieldset class="ro-consent"><legend class="ro-sr">Updates and offers</legend>
+          ${p.phone ? `<label class="ro-consent-opt"><input type="checkbox" name="sms_updates"${p.sms_updates ? ' checked' : ''}> Text me when my order is ready</label>
+          <label class="ro-consent-opt"><input type="checkbox" name="sms_marketing"${p.sms_marketing ? ' checked' : ''}> Text me deals and rewards news from ${esc(menu.restaurant.name)}. Up to 4 msgs/month. Msg &amp; data rates may apply. Reply STOP to opt out, HELP for help.</label>` : ''}
+          <label class="ro-consent-opt"><input type="checkbox" name="email_marketing"${p.email_marketing ? ' checked' : ''}> Email me specials and rewards news. Unsubscribe anytime.</label></fieldset>
+        ${p.addresses.length ? `<h3>Saved addresses</h3><ul class="ro-past">${p.addresses.map((a, n) => `<li><div>${esc(`${a.street}${a.unit ? ` ${a.unit}` : ''}, ${a.city} ${a.zip}`)}</div><button type="button" class="ro-apply" data-deladdr="${n}">Remove</button></li>`).join('')}</ul>` : ''}
+        <p class="ro-err" role="alert"></p><button class="ro-add" type="submit">Save</button></form>
+      <button type="button" class="ro-apply" id="ro-out">Sign out</button></div>`;
+    dialog.querySelector('.ro-x').onclick = close;
+    const save = async (profile, note) => {
+      const r = await post({ action: 'acct_update', session: acctToken, profile }).catch(() => null);
+      if (r?.signed_out) { saveToken(null); acct = null; render(); return signInView({}); }
+      if (!r?.ok) { dialog.querySelector('#ro-prof .ro-err').textContent = r?.error || 'That did not save.'; return; }
+      setAccount(r.profile); render(); accountView(note);
+    };
+    dialog.querySelector('#ro-prof').onsubmit = (e) => {
+      e.preventDefault();
+      const f = e.target.elements;
+      save({ first_name: f.first_name.value, last_name: f.last_name.value, email: f.email.value, email_marketing: f.email_marketing.checked, ...(f.sms_updates ? { sms_updates: f.sms_updates.checked, sms_marketing: f.sms_marketing.checked } : {}) }, 'Saved.');
+    };
+    dialog.querySelectorAll('[data-deladdr]').forEach((b) => { b.onclick = () => save({ addresses: p.addresses.filter((_, n) => n !== +b.dataset.deladdr) }, 'Address removed.'); });
+    dialog.querySelectorAll('[data-again]').forEach((b) => { b.onclick = async () => { b.disabled = true; await reorder(b.dataset.again); if (!cart.length) b.disabled = false; }; });
+    dialog.querySelector('#ro-out').onclick = async () => {
+      await post({ action: 'acct_signout', session: acctToken }).catch(() => null);
+      saveToken(null); acct = null; render(); close();
+    };
+    if (!dialog.open) dialog.showModal();
+  }
+
   const findGroup = (gs, id) => { for (const g of gs) { if (g.id === id) return g; for (const o of g.options) { const f = findGroup(o.groups || [], id); if (f) return f; } } return null; };
 
   // ----- cart and checkout -----
@@ -318,11 +438,15 @@
       ${extras.length ? `<section class="ro-pairs"><h3>Add to your order</h3>${extras.map(pairButton).join('')}</section>` : ''}
       <p class="ro-when">${fulfillment === 'delivery' ? 'Delivery' : 'Pickup'}: <strong>${esc(slotText(pickup))}</strong></p>
       <form id="ro-pay" novalidate>
+        ${acct ? `<p class="ro-signed">Signed in as ${esc([acct.first_name, acct.last_name].filter(Boolean).join(' ') || acct.phone || acct.email)}. <button type="button" class="ro-link" id="ro-acct2">Your account</button></p>`
+          : '<p class="ro-signed"><button type="button" class="ro-link" id="ro-acct2">Sign in</button> for faster checkout and your past orders.</p>'}
+        ${acct?.rewards && acct.rewards.points >= acct.rewards.redeem_points && !draft.rewards_code ? `<p class="ro-signed">You have a ${money(acct.rewards.redeem_cents)} reward. <button type="button" class="ro-link" id="ro-userw">Use it</button></p>` : ''}
         <div class="ro-two"><label class="ro-field">First name<input name="first_name" autocomplete="given-name" required value="${esc(draft.first_name)}"></label>
         <label class="ro-field">Last name<input name="last_name" autocomplete="family-name" required value="${esc(draft.last_name)}"></label></div>
         <label class="ro-field">Mobile phone<input name="phone" type="tel" autocomplete="tel" required value="${esc(draft.phone)}"></label>
         <label class="ro-field">Email for your receipt<input name="email" type="email" autocomplete="email" required value="${esc(draft.email)}"></label>
         ${fulfillment === 'delivery' ? `<fieldset class="ro-address"><legend>Delivery address</legend>
+          ${acct?.addresses?.length ? `<label class="ro-field">Saved address<select id="ro-saved"><option value="">Choose one</option>${acct.addresses.map((a, n) => `<option value="${n}">${esc(`${a.street}${a.unit ? ` ${a.unit}` : ''}, ${a.city}`)}</option>`).join('')}</select></label>` : ''}
           <label class="ro-field">Street address<input name="street" autocomplete="address-line1" required value="${esc(draft.street)}"></label>
           <label class="ro-field">Apartment or unit<input name="unit" autocomplete="address-line2" value="${esc(draft.unit)}"></label>
           <div class="ro-two"><label class="ro-field">City<input name="city" autocomplete="address-level2" required value="${esc(draft.city)}"></label>
@@ -351,6 +475,9 @@
     dialog.querySelectorAll('[data-edit]').forEach((b) => { b.onclick = () => { keep(); close(); openItem(cart[+b.dataset.edit].id, +b.dataset.edit); }; });
     dialog.querySelectorAll('[data-tip]').forEach((b) => { b.onclick = () => { keep(); tipPct = +b.dataset.tip; tip = Math.round(cartTotal() * tipPct / 100); openCart(); }; });
     dialog.querySelector('#ro-apply').onclick = () => { keep(); refreshTotals(); };
+    dialog.querySelector('#ro-acct2').onclick = () => { keep(); openAccount(acct ? null : openCart); };
+    dialog.querySelector('#ro-userw')?.addEventListener('click', () => { keep(); cartDraft.rewards_code = acct.rewards.code; if (acct.phone) cartDraft.phone = acct.phone.replace(/^\+1(\d{3})(\d{3})(\d{4})$/, '($1) $2-$3'); openCart(); });
+    dialog.querySelector('#ro-saved')?.addEventListener('change', (e) => { const a = acct.addresses[+e.target.value]; if (!a) return; keep(); Object.assign(cartDraft, { street: a.street, unit: a.unit || '', city: a.city, zip: a.zip, instructions: a.instructions || '' }); openCart(); });
     dialog.querySelector('#ro-fee')?.addEventListener('click', () => { keep(); refreshTotals(); });
     dialog.querySelectorAll('.ro-pairs [data-pair]').forEach((b) => { b.onclick = () => { keep(); addPair(b.dataset.pair, openCart, () => openCart(), 'your order'); }; });
     dialog.querySelector('#ro-pay').addEventListener('submit', submit);
@@ -395,7 +522,7 @@
     const consent = { sms_updates: f.elements.sms_updates.checked, sms_marketing: f.elements.sms_marketing.checked, email_marketing: f.elements.email_marketing.checked };
     try { if (f.elements.remember.checked) localStorage.setItem(GUEST, JSON.stringify({ first_name: val('first_name'), last_name: val('last_name'), phone: val('phone'), email: val('email') })); else localStorage.removeItem(GUEST); } catch { /* not saved on this device */ }
     for (const k of ['sms_updates', 'sms_marketing', 'email_marketing', 'remember', 'promo_code']) delete guest[k];
-    const r = await post({ action: 'checkout', pickup_at: pickup, tip_cents: tip, items: cart, guest, gift_code, rewards_code, promo_code, consent, fulfillment, address: fulfillment === 'delivery' ? addressFrom(val) : undefined, return_url: location.origin, attribution: window.HRA ? window.HRA.get() : undefined }).catch(() => null);
+    const r = await post({ action: 'checkout', pickup_at: pickup, tip_cents: tip, items: cart, guest, gift_code, rewards_code, promo_code, consent, fulfillment, address: fulfillment === 'delivery' ? addressFrom(val) : undefined, session: acctToken || undefined, return_url: location.origin, attribution: window.HRA ? window.HRA.get() : undefined }).catch(() => null);
     if (!r?.ok) { err.textContent = r?.error || 'Something went wrong. Please try again or call us.'; btn.disabled = false; return; }
     cart = []; store.set(cart);
     if (r.test) location.href = `/order/?t=${r.token}`; else leave(r, `/order/?t=${r.token}`);
