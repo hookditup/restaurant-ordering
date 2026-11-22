@@ -45,7 +45,9 @@
 
   function loginView(msg) {
     root.innerHTML = `<form class="a-login"><h1>Admin sign in</h1><label>Email<input name="email" type="email" autocomplete="username" required></label>
-      <label>Password<input name="password" type="password" autocomplete="current-password" required></label><p class="a-bad" role="alert">${esc(msg || '')}</p><button>Sign in</button></form>`;
+      <label>Password<input name="password" type="password" autocomplete="current-password" required></label><p class="a-bad" role="alert">${esc(msg || '')}</p><button>Sign in</button>
+      <button type="button" class="a-alt" id="a-forgot">Forgot password?</button></form>`;
+    root.querySelector('#a-forgot').onclick = forgotView;
     root.querySelector('form').onsubmit = async (e) => {
       e.preventDefault();
       const f = new FormData(e.target);
@@ -54,6 +56,46 @@
       if (!x.ok) { root.querySelector('.a-bad').textContent = 'Wrong email or password.'; return; }
       session = d; keep.set(d); start();
     };
+  }
+
+  // Forgot password: email a reset link that comes back to this page, then choose a new password.
+  function forgotView() {
+    root.innerHTML = `<form class="a-login"><h1>Reset password</h1><p>Enter your login email and we'll send you a link to choose a new password.</p>
+      <label>Email<input name="email" type="email" autocomplete="username" required></label><p class="a-bad" role="alert"></p><button>Send reset link</button>
+      <button type="button" class="a-alt" id="a-back">Back to sign in</button></form>`;
+    root.querySelector('#a-back').onclick = () => loginView();
+    root.querySelector('form').onsubmit = async (e) => {
+      e.preventDefault();
+      const btn = e.target.querySelector('button'), out = root.querySelector('.a-bad');
+      btn.disabled = true;
+      const x = await fetch(`${AUTH}/recover?redirect_to=${encodeURIComponent(`${location.origin}/admin/`)}`, { method: 'POST', headers: { apikey: cfg.key, 'Content-Type': 'application/json' }, body: JSON.stringify({ email: new FormData(e.target).get('email') }) }).catch(() => null);
+      btn.disabled = false;
+      if (x?.status === 429) { out.textContent = 'Too many tries. Please wait a few minutes and try again.'; return; }
+      if (!x?.ok) { out.textContent = "We couldn't send the email. Please try again."; return; }
+      root.innerHTML = `<div class="a-login"><h1>Check your email</h1><p>If that email has a login, a reset link is on its way. Open it on this device.</p><button class="a-alt" id="a-back">Back to sign in</button></div>`;
+      root.querySelector('#a-back').onclick = () => loginView();
+    };
+  }
+  // The reset link lands here with #access_token=...&type=recovery.
+  function recoveryFromLink() {
+    const h = new URLSearchParams(location.hash.slice(1));
+    if (!h.get('type') && !h.get('error')) return false;
+    history.replaceState(null, '', location.pathname + location.search);
+    if (h.get('error')) { loginView('That reset link has expired or was already used. Ask for a new one.'); return true; }
+    if (h.get('type') !== 'recovery' || !h.get('access_token')) return false;
+    const temp = { access_token: h.get('access_token'), refresh_token: h.get('refresh_token') };
+    root.innerHTML = `<form class="a-login"><h1>Choose a new password</h1><label>New password<input name="pw" type="password" minlength="10" autocomplete="new-password" required></label>
+      <label>Type it again<input name="pw2" type="password" minlength="10" autocomplete="new-password" required></label><p class="a-bad" role="alert"></p><button>Save password</button></form>`;
+    root.querySelector('form').onsubmit = async (e) => {
+      e.preventDefault();
+      const f = e.target, out = root.querySelector('.a-bad');
+      if (f.pw.value !== f.pw2.value) { out.textContent = "The two passwords don't match."; return; }
+      const x = await fetch(`${AUTH}/user`, { method: 'PUT', headers: { apikey: cfg.key, Authorization: `Bearer ${temp.access_token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ password: f.pw.value }) });
+      const d = await x.json().catch(() => ({}));
+      if (!x.ok) { out.textContent = x.status === 401 ? 'That reset link has expired. Ask for a new one.' : (d.msg || d.message || 'That password was not accepted.'); return; }
+      session = temp; keep.set(temp); start();
+    };
+    return true;
   }
 
   async function counts() {
@@ -802,5 +844,5 @@
     r = access.find((x) => x.slug === saved) || access.find((x) => x.slug === cfg.restaurant) || access[0];
     shell();
   }
-  start();
+  if (!recoveryFromLink()) start();
 })();
