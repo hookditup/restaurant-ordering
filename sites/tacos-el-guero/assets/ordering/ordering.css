@@ -4,7 +4,7 @@
 .ro-closed { background: var(--ro-soft); padding: .75rem; border-radius: 8px; font-weight: 600; }
 .ro-bar { display: flex; gap: 1rem; margin-bottom: .75rem; }
 .ro-bar label { font-weight: 600; display: flex; flex-direction: column; gap: .25rem; width: min(100%, 320px); }
-.ro-bar select, .ro-field input, .ro-field textarea { width: 100%; min-height: 44px; padding: .55rem .7rem; border: 1px solid #8c8c8c; border-radius: 8px; font: inherit; background: #fff; color: var(--ro-ink); }
+.ro-bar select, .ro-field input, .ro-field select, .ro-field textarea { width: 100%; min-height: 44px; padding: .55rem .7rem; border: 1px solid #8c8c8c; border-radius: 8px; font: inherit; background: #fff; color: var(--ro-ink); }
 .ro-jump { display: flex; gap: .4rem; overflow-x: auto; scrollbar-width: none; padding: .5rem 0; position: sticky; top: 76px; background: #fff; z-index: 5; border-bottom: 1px solid var(--ro-line); }
 .ro-jump a { flex: none; padding: .4rem .75rem; border-radius: 999px; background: var(--ro-soft); color: var(--ro-ink); text-decoration: none; font-size: .875rem; }
 .ro-jump a[aria-current="true"] { background: var(--ro-accent); color: #fff; font-weight: 600; }

@@ -238,6 +238,7 @@
     winback: ['We miss you', "Goes to guests whose last online order was this many days ago. Each guest gets it at most once every 60 days.", 'days since last order'],
     birthday: ['Birthday', 'Sent this many days before the birthday guests gave you.', 'days before birthday'],
     review: ['Review request', 'Asks for a review this many hours after an order is completed. At most once a month per guest.', 'hours after the order'],
+    cart: ['Left in cart', 'Reminds signed-in guests who added food but did not order, this many hours later. At most once a week per guest. Texts need their deals-text consent.', 'hours after they left'],
     points: ['Reward waiting', 'Reminds rewards members who have enough points for a reward and haven\'t ordered in this many days.', 'days since last order'],
   };
   const FIELDS = '{first_name}, {restaurant}, {link}';
@@ -259,7 +260,7 @@
           ${['winback', 'birthday'].includes(a.kind) ? `<label>Promo code to include (optional) <input name="promo_code" value="${esc(a.promo_code)}" maxlength="24" placeholder="WEMISSYOU"></label>` : ''}
           ${a.kind === 'order_ready' || a.kind === 'welcome' ? '' : `<label>Email subject <input name="subject" value="${esc(a.subject)}" maxlength="200"></label><label>Email message <textarea name="body" rows="4" maxlength="5000">${esc(a.body)}</textarea></label>`}
           <label>Text message <textarea name="sms_body" rows="2" maxlength="600">${esc(a.sms_body)}</textarea></label>
-          <p class="a-help">${{ order_ready: 'Also: {order_no}.', reservation_reminder: 'Also: {time}, {guests}, {cancel_link}.', welcome: 'Also: {code}.', winback: 'Also: {promo_line}.', birthday: 'Also: {promo_line}.', review: 'Also: {review_link}.', points: 'Also: {points}, {code}.' }[a.kind]} Marketing texts end with "Reply STOP to opt out."</p>
+          <p class="a-help">${{ order_ready: 'Also: {order_no}.', reservation_reminder: 'Also: {time}, {guests}, {cancel_link}.', welcome: 'Also: {code}.', winback: 'Also: {promo_line}.', birthday: 'Also: {promo_line}.', review: 'Also: {review_link}.', points: 'Also: {points}, {code}.', cart: 'Also: {items}, {cart_link}.' }[a.kind]} Marketing texts end with "Reply STOP to opt out."</p>
           <div class="a-btns"><button>Save</button></div></form></details>`).join('')}
       <h2>Send a campaign</h2>
       <form class="a-box" id="a-camp"><div class="a-grid2"><label>Name (staff only) <input name="name" required maxlength="120" placeholder="Taco Tuesday"></label>

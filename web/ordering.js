@@ -12,8 +12,16 @@
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const store = {
     get() { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch { return []; } },
-    set(v) { try { localStorage.setItem(KEY, JSON.stringify(v)); } catch { /* cart still works this visit */ } },
+    set(v) { try { localStorage.setItem(KEY, JSON.stringify(v)); } catch { /* cart still works this visit */ } syncCart(); },
   };
+  const rpc = (fn, args) => fetch(`${cfg.url}/rest/v1/rpc/${fn}`, { method: 'POST', headers: { apikey: cfg.key, 'Content-Type': 'application/json' }, body: JSON.stringify(args) }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  // A signed-in guest's cart is also kept on their account, for the "left in cart" reminder and other devices.
+  let cartTimer = null;
+  function syncCart() {
+    if (!acctToken || !items.size) return;
+    clearTimeout(cartTimer);
+    cartTimer = setTimeout(() => rpc('guest_save_cart', { p_slug: cfg.restaurant, p_session: acctToken, p_lines: cart, p_names: cart.filter((l) => items.has(l.id)).map((l) => `${l.qty} × ${items.get(l.id).item.name}`) }), 1500);
+  }
 
   let menu, slots = [], pickupSlotsList = [], deliverySlots = [], deliveryMode = 'off', fulfillment = 'pickup', pickup = null, cart = store.get(), tip = 0, tipPct = 0, accepting = true;
   const items = new Map();
@@ -90,7 +98,9 @@
       await loadAccount();
       await reorderFromLink();
       render();
-      if (new URLSearchParams(location.search).get('account')) { history.replaceState(null, '', location.pathname + location.hash); openAccount(); }
+      const q = new URLSearchParams(location.search);
+      if (q.get('account')) { history.replaceState(null, '', location.pathname + location.hash); openAccount(); }
+      else if (q.get('cart')) { history.replaceState(null, '', location.pathname + location.hash); if (cart.length) openCart(); }
       // Photos and fonts can move the page while it loads, so settle on the section again.
       const goTo = () => document.getElementById(location.hash.slice(1))?.scrollIntoView({ behavior: 'instant' });
       if (location.hash) { goTo(); setTimeout(goTo, 600); }
@@ -312,8 +322,16 @@
     if (!acctToken) return;
     const r = await post({ action: 'acct_me', session: acctToken }).catch(() => null);
     if (r?.ok) setAccount(r.profile); else if (r?.signed_out) saveToken(null);
+    if (acct) await loadExtras();
+  }
+  async function loadExtras() {
+    const x = await rpc('guest_extras', { p_slug: cfg.restaurant, p_session: acctToken });
+    if (x) { acct.birth_month = x.birth_month; acct.birth_day = x.birth_day; }
+    // Empty cart on this device: bring back the one saved on the account.
+    if (!cart.length && Array.isArray(x?.cart)) { cart = x.cart.filter((l) => items.has(l.id)); try { localStorage.setItem(KEY, JSON.stringify(cart)); } catch { /* fine */ } }
   }
   function setAccount(p) {
+    if (p && acct) { p.birth_month ??= acct.birth_month; p.birth_day ??= acct.birth_day; }
     acct = p;
     if (!p) return;
     // Fill checkout from the account (what the guest already typed wins).
@@ -372,7 +390,7 @@
         const r = await post({ action: 'acct_verify', ...who, code: f.elements.code.value }).catch(() => null);
         f.querySelector('.ro-add').disabled = false;
         if (!r?.ok) { err.textContent = r?.error || 'Something went wrong. Please try again.'; return; }
-        saveToken(r.session); setAccount(r.profile); render();
+        saveToken(r.session); setAccount(r.profile); await loadExtras(); syncCart(); render(); updateCartButton();
         if (accountBack.fn) { const fn = accountBack.fn; accountBack.fn = null; fn(); } else accountView(r.created ? 'Your account is ready.' : '');
       };
     }
@@ -389,6 +407,9 @@
         <label class="ro-field">Last name<input name="last_name" autocomplete="family-name" value="${esc(p.last_name)}"></label></div>
         ${p.phone ? `<p class="ro-note">Mobile: ${esc(p.phone.replace(/^\+1(\d{3})(\d{3})(\d{4})$/, '($1) $2-$3'))}</p>` : ''}
         <label class="ro-field">Email<input name="email" type="email" autocomplete="email" value="${esc(p.email)}"></label>
+        <div class="ro-two"><label class="ro-field">Birthday month<select name="bm"><option value="">-</option>${['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'].map((m, i) => `<option value="${i + 1}"${p.birth_month === i + 1 ? ' selected' : ''}>${m}</option>`).join('')}</select></label>
+        <label class="ro-field">Day<input name="bd" type="number" min="1" max="31" inputmode="numeric" value="${p.birth_day || ''}"></label></div>
+        <p class="ro-note">Add your birthday for a treat from us.</p>
         <fieldset class="ro-consent"><legend class="ro-sr">Updates and offers</legend>
           ${p.phone ? `<label class="ro-consent-opt"><input type="checkbox" name="sms_updates"${p.sms_updates ? ' checked' : ''}> Text me when my order is ready</label>
           <label class="ro-consent-opt"><input type="checkbox" name="sms_marketing"${p.sms_marketing ? ' checked' : ''}> Text me deals and rewards news from ${esc(menu.restaurant.name)}. Up to 4 msgs/month. Msg &amp; data rates may apply. Reply STOP to opt out, HELP for help.</label>` : ''}
@@ -403,9 +424,14 @@
       if (!r?.ok) { dialog.querySelector('#ro-prof .ro-err').textContent = r?.error || 'That did not save.'; return; }
       setAccount(r.profile); render(); accountView(note);
     };
-    dialog.querySelector('#ro-prof').onsubmit = (e) => {
+    dialog.querySelector('#ro-prof').onsubmit = async (e) => {
       e.preventDefault();
-      const f = e.target.elements;
+      const f = e.target.elements, bm = +f.bm.value || null, bd = +f.bd.value || null;
+      if ((bm || bd) && !(bm && bd >= 1 && bd <= 31)) { dialog.querySelector('#ro-prof .ro-err').textContent = 'Pick the month and day of your birthday.'; return; }
+      if (bm !== (p.birth_month || null) || bd !== (p.birth_day || null)) {
+        await rpc('guest_birthday', { p_slug: cfg.restaurant, p_session: acctToken, p_month: bm, p_day: bd });
+        acct.birth_month = bm; acct.birth_day = bd;
+      }
       save({ first_name: f.first_name.value, last_name: f.last_name.value, email: f.email.value, email_marketing: f.email_marketing.checked, ...(f.sms_updates ? { sms_updates: f.sms_updates.checked, sms_marketing: f.sms_marketing.checked } : {}) }, 'Saved.');
     };
     dialog.querySelectorAll('[data-deladdr]').forEach((b) => { b.onclick = () => save({ addresses: p.addresses.filter((_, n) => n !== +b.dataset.deladdr) }, 'Address removed.'); });
