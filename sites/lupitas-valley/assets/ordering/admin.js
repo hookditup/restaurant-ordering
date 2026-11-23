@@ -238,7 +238,7 @@
     winback: ['We miss you', "Goes to guests whose last online order was this many days ago. Each guest gets it at most once every 60 days.", 'days since last order'],
     birthday: ['Birthday', 'Sent this many days before the birthday guests gave you.', 'days before birthday'],
     review: ['Review request', 'Asks for a review this many hours after an order is completed. At most once a month per guest.', 'hours after the order'],
-    cart: ['Left in cart', 'Reminds signed-in guests who added food but did not order, this many hours later. At most once a week per guest. Texts need their deals-text consent.', 'hours after they left'],
+    cart: ['Left in cart', 'Reminds signed-in guests who added food but did not order, this many minutes later (30 works well). At most once a week per guest. Texts need their deals-text consent.', 'minutes after they left'],
     points: ['Reward waiting', 'Reminds rewards members who have enough points for a reward and haven\'t ordered in this many days.', 'days since last order'],
   };
   const FIELDS = '{first_name}, {restaurant}, {link}';
