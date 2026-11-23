@@ -49,11 +49,16 @@
 
   const card = (o, tz) => {
     const when = new Date(o.pickup_at).toLocaleString('en-US', { timeZone: tz, weekday: 'short', hour: 'numeric', minute: '2-digit' });
-    const out = o.fulfillment === 'delivery', a = o.delivery_address;
-    const b = { new: [['accept', out ? 'Accept and send driver' : 'Accept']], accepted: [['ready', 'Ready']], ready: [['complete', out ? 'Driver took it' : 'Picked up']] }[o.status];
+    const out = o.fulfillment === 'delivery', a = o.delivery_address, own = out && ['own', 'out'].includes(o.delivery_status);
+    const b = { new: [['accept', out && !own ? 'Accept and send driver' : 'Accept']], accepted: [['ready', 'Ready']], ready: [['complete', own ? 'Delivered' : out ? 'Driver took it' : 'Picked up']] }[o.status];
+    const drivers = restaurant.drivers || [];
+    const send = own && o.delivery_status === 'own' && ['accepted', 'ready'].includes(o.status)
+      ? (drivers.length ? `<div class="k-send"><select aria-label="Driver for order ${esc(o.order_no)}" data-driver="${o.id}">${drivers.map((d, i) => `<option value="${i}">${esc(d.name)}</option>`).join('')}</select><button data-id="${o.id}" data-move="out">Send driver</button></div>` : '<p class="k-note">Add your drivers in Admin → Settings.</p>')
+      : own && o.delivery_status === 'out' ? `<p class="k-note"><strong>Out with ${esc(o.driver_name)}</strong></p>` : '';
     return `<article class="k-card k-${o.status}"><header><strong>#${esc(o.order_no)}</strong><span>${esc(when)}</span></header>
-      <p class="k-who">${esc(o.first_name)} ${esc(o.last_name)} · <a href="tel:${esc(o.phone)}">${esc(o.phone)}</a>${o.test_mode ? ' · TEST' : ''}</p>
-      ${out ? `<p class="k-note"><strong>DELIVERY</strong>${a ? ` · ${esc(a.street)}${a.unit ? ` ${esc(a.unit)}` : ''}, ${esc(a.city)}` : ''}${a?.instructions ? `<br>${esc(a.instructions)}` : ''}${o.delivery_status === 'failed' ? '<br><strong>Driver request failed. Call DoorDash or the guest.</strong>' : ''}</p>` : ''}
+      <p class="k-who">${esc(o.first_name)} ${esc(o.last_name)} · <a href="tel:${esc(o.phone)}">${esc(o.phone)}</a>${o.test_mode ? ' · TEST' : ''}${o.channel === 'phone' ? ' · PHONE' : ''}</p>
+      ${o.payment_status === 'unpaid' ? '<p class="k-due">NOT PAID · collect at pickup</p>' : ''}
+      ${out ? `<p class="k-note"><strong>DELIVERY</strong>${a ? ` · ${esc(a.street)}${a.unit ? ` ${esc(a.unit)}` : ''}, ${esc(a.city)}` : ''}${a?.instructions ? `<br>${esc(a.instructions)}` : ''}${o.delivery_status === 'failed' ? '<br><strong>Driver request failed. Call DoorDash or the guest.</strong>' : ''}</p>${send}` : ''}
       <ul>${o.order_items.map((i) => `<li><strong>${i.qty} × ${esc(i.name)}</strong>${i.options.length ? `<span>${esc(i.options.map((x) => x.name).join(', '))}</span>` : ''}${i.note ? `<em>${esc(i.note)}</em>` : ''}</li>`).join('')}</ul>
       ${o.note ? `<p class="k-note">${esc(o.note)}</p>` : ''}<p class="k-total">${money(o.total_cents)}</p>
       <div class="k-btns">${b.map(([m, t]) => `<button data-id="${o.id}" data-move="${m}">${t}</button>`).join('')}<button class="k-cancel" data-id="${o.id}" data-move="cancel">Cancel</button></div></article>`;
@@ -61,7 +66,7 @@
 
   async function tick() {
     try {
-      const orders = await api(`orders?select=id,order_no,status,fulfillment,delivery_address,delivery_status,pickup_at,first_name,last_name,phone,note,total_cents,test_mode,order_items(name,qty,options,note)&restaurant_id=eq.${restaurant.id}&status=in.(new,accepted,ready)&order=pickup_at.asc`);
+      const orders = await api(`orders?select=id,order_no,status,fulfillment,delivery_address,delivery_status,driver_name,channel,payment_status,pickup_at,first_name,last_name,phone,note,total_cents,test_mode,order_items(name,qty,options,note)&restaurant_id=eq.${restaurant.id}&status=in.(new,accepted,ready)&order=pickup_at.asc`);
       const [r] = await api(`restaurants?select=accepting_orders&id=eq.${restaurant.id}`);
       lastOk = Date.now();
       const fresh = orders.filter((o) => o.status === 'new' && !seen.has(o.id));
@@ -96,14 +101,16 @@
           if (reason === null) return;
         }
         b.disabled = true;
-        const r = await act({ action: 'kitchen', order_id: b.dataset.id, move: b.dataset.move, reason });
+        const driver = b.dataset.move === 'out' ? view.querySelector(`[data-driver="${b.dataset.id}"]`)?.value : undefined;
+        const r = await act({ action: 'kitchen', order_id: b.dataset.id, move: b.dataset.move, reason, driver });
         if (!r.ok) showError(r.error);
+        else if (b.dataset.move === 'out') showError(r.texted ? 'Driver texted the delivery link.' : `Texting isn't set up. Give the driver this link: ${r.driver_link}`, 30000);
         tick();
       };
     });
   }
   const audioStart = () => { try { audio = audio || new (window.AudioContext || window.webkitAudioContext)(); audio.resume(); } catch { /* no sound */ } };
-  function showError(msg) { const p = document.createElement('p'); p.className = 'k-toast'; p.textContent = msg; document.body.appendChild(p); setTimeout(() => p.remove(), 5000); }
+  function showError(msg, ms = 5000) { const p = document.createElement('p'); p.className = 'k-toast'; p.textContent = msg; document.body.appendChild(p); setTimeout(() => p.remove(), ms); }
   function askReason() {
     return new Promise((res) => {
       const d = document.createElement('dialog');
@@ -119,7 +126,7 @@
     if (!session) return loginView();
     clearInterval(timer);
     try {
-      const rows = await api(`restaurants?select=id,name,timezone&slug=eq.${encodeURIComponent(cfg.restaurant)}`);
+      const rows = await api(`restaurants?select=id,name,timezone,drivers&slug=eq.${encodeURIComponent(cfg.restaurant)}`);
       restaurant = rows[0];
       if (!restaurant) { session = null; keep.set(null); return loginView('This account is not set up for this restaurant.'); }
     } catch { session = null; keep.set(null); return loginView(); }

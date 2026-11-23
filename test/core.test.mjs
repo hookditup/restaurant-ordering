@@ -163,3 +163,65 @@ test('cart lines keep the chosen option ids for reorder', () => {
   const { option_ids } = priceLine(tacos, ['stk', 'noon']);
   assert.deepEqual(option_ids.sort(), ['noon', 'stk']);
 });
+
+import { channelOf, sourceOf, tagLinks, parseSpoken, pickSlot } from '../supabase/functions/ordering/core.js';
+test('channels: where a guest came from', () => {
+  assert.equal(channelOf({ gclid: 'abc' }).channel, 'google_ads');
+  assert.equal(channelOf({ source: 'google', medium: 'gbp' }).channel, 'google_business');
+  assert.equal(channelOf({ via: 'gbp' }).channel, 'google_business');
+  assert.equal(channelOf({ ref: 'google.com' }).channel, 'google_search');
+  assert.equal(channelOf({ ref: 'l.facebook.com' }).channel, 'social');
+  assert.deepEqual(channelOf({ ref: 'l.facebook.com' }).source, 'facebook');
+  assert.equal(channelOf({ fbclid: 'x', source: 'facebook', medium: 'paid' }).channel, 'social_ads');
+  assert.equal(channelOf({ ref: 'chatgpt.com' }).channel, 'ai');
+  assert.deepEqual(channelOf({ via: 'sms.winback' }), { channel: 'sms', source: 'sms', campaign: 'winback' });
+  assert.deepEqual(channelOf({ via: 'qr.billboard-i15' }), { channel: 'qr', source: 'qr', campaign: 'billboard-i15' });
+  assert.equal(channelOf({ via: 'chamber' }).channel, 'campaign');
+  assert.equal(channelOf({ ref: 'yelp.com' }).channel, 'referral');
+  assert.equal(channelOf({ direct: '1' }).channel, 'direct');
+  assert.equal(sourceOf({ firstTouch: { ref: 'google.com' }, lastTouch: { direct: '1' } }).channel, 'google_search');
+  assert.equal(sourceOf({ firstTouch: { ref: 'google.com' }, lastTouch: { via: 'email.c1' } }).channel, 'email');
+  // the attribution script's format
+  assert.equal(channelOf({ utm_source: 'google', utm_medium: 'organic', referrer: 'https://www.google.com/' }).channel, 'google_search');
+  assert.equal(channelOf({ utm_source: 'google', utm_medium: 'gbp' }).channel, 'google_business');
+  assert.equal(channelOf({ utm_source: 'facebook', utm_medium: 'social', referrer: 'https://l.facebook.com/' }).source, 'facebook');
+  assert.equal(channelOf({ utm_source: 'facebook', utm_medium: 'paid_social', utm_campaign: 'fall' }).channel, 'social_ads');
+  assert.equal(channelOf({ utm_source: 'chatgpt', utm_medium: 'ai' }).channel, 'ai');
+  assert.equal(channelOf({ utm_source: 'yelp', utm_medium: 'referral' }).channel, 'referral');
+  assert.equal(channelOf({ utm_source: 'print', utm_medium: 'qr', utm_campaign: 'billboard-i15' }).campaign, 'billboard-i15');
+  assert.equal(channelOf({ gclid: 'x', utm_source: 'google', utm_medium: 'cpc' }).channel, 'google_ads');
+  assert.equal(sourceOf({ firstTouch: { utm_source: 'google', utm_medium: 'organic' }, lastTouch: null }).channel, 'google_search');
+});
+test('message links get a source tag, other links do not', () => {
+  const t = tagLinks('Order: https://lv.com/menu. Or https://lv.com/menu/?cart=1#x and https://other.com/a', 'https://lv.com', 'sms', 'cart');
+  assert.equal(t, 'Order: https://lv.com/menu?utm_medium=sms&utm_campaign=cart. Or https://lv.com/menu/?cart=1&utm_medium=sms&utm_campaign=cart#x and https://other.com/a');
+  assert.equal(tagLinks('https://lv.com/?utm_source=x', 'https://lv.com', 'sms', 'y'), 'https://lv.com/?utm_source=x');
+  assert.equal(channelOf({ utm_medium: 'sms', utm_campaign: 'cart' }).channel, 'sms');
+});
+test('phone orders: spoken text to cart lines', () => {
+  const tamale = { id: 'tam', name: 'Pork Tamale', price_cents: 400, groups: [] };
+  const drink = { id: 'hor', name: 'Horchata', price_cents: 300, groups: [{ id: 'sz', name: 'Size', min: 1, max: 1, options: [{ id: 'sm', name: 'Small', price_cents: 0 }, { id: 'lg', name: 'Large', price_cents: 100 }] }] };
+  const m = { restaurant: r, categories: [...menu.categories, { name: 'All day', items: [tamale, drink] }] };
+  const p = parseSpoken(m, '2 steak tacos no onion; three pork tamales, a large horchata', new Date(noon));
+  assert.deepEqual(p.ask, []);
+  assert.deepEqual(p.lines.map((l) => [l.id, l.qty, l.options]), [['lunch', 2, ['stk', 'noon']], ['tam', 3, []], ['hor', 1, ['lg']]]);
+  assert.match(p.lines[0].note, /^no onion/);
+  const q = parseSpoken(m, '1 horchata; 1 pizza', new Date(noon));
+  assert.equal(q.lines.length, 0);
+  assert.match(q.ask[0], /choose Size: Small, Large/);
+  assert.match(q.ask[1], /couldn't find "pizza"/);
+  assert.equal(parseSpoken(m, '1 chicken tacos with rice', new Date(six)).lines[0].id, 'din', 'dinner version at 6pm');
+});
+test('phone orders: spoken pickup time to a slot', () => {
+  const slots = pickupSlots(r, new Date(noon));
+  assert.equal(pickSlot(slots, 'asap', r.timezone, new Date(noon)), slots[0]);
+  assert.equal(pickSlot(slots, '6:30', r.timezone, new Date(noon)), '2026-11-05T01:30:00.000Z');
+  assert.equal(pickSlot(slots, '6:20 pm', r.timezone, new Date(noon)), '2026-11-05T01:30:00.000Z');
+  assert.equal(pickSlot(slots, 'in 45 minutes', r.timezone, new Date(noon)), '2026-11-04T19:45:00.000Z');
+  assert.equal(pickSlot(slots, 'tomorrow at noon', r.timezone, new Date(noon)), '2026-11-05T19:00:00.000Z');
+  assert.equal(pickSlot(slots, 'next week sometime', r.timezone, new Date(noon)), null);
+});
+test('phone orders: a time that already passed today is not quietly moved', () => {
+  const slots = pickupSlots(r, new Date(six));
+  assert.equal(pickSlot(slots, '11:30 am', r.timezone, new Date(six)), null);
+});

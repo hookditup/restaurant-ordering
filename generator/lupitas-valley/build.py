@@ -307,6 +307,8 @@ def build():
     page('/order', "Your Order | Lupita's Valley", "Track your Lupita's Valley order.", '<div class="ro-page"><div id="ro-status" aria-live="polite"><p>Loading your order…</p></div></div><script src="/assets/ordering/order-status.js" defer></script>', extra_head='<link rel="stylesheet" href="/assets/ordering/ordering.css">\n', robots='<meta name="robots" content="noindex">\n')
     os.makedirs(OUT + '/kitchen', exist_ok=True)
     open(OUT + '/kitchen/index.html', 'w', encoding='utf8').write('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Kitchen | Lupita\'s Valley</title><link rel="stylesheet" href="/assets/ordering/kitchen.css"></head><body><main id="ro-kitchen"></main><script src="/assets/config.js"></script><script src="/assets/ordering/kitchen.js" defer></script></body></html>')
+    os.makedirs(OUT + '/driver', exist_ok=True)
+    open(OUT + '/driver/index.html', 'w', encoding='utf8').write('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Delivery | Lupita\'s Valley</title><link rel="stylesheet" href="/assets/ordering/driver.css"></head><body><main id="ro-driver"><p>Loading…</p></main><script src="/assets/config.js"></script><script src="/assets/ordering/driver.js" defer></script></body></html>')
     os.makedirs(OUT + '/admin', exist_ok=True)
     open(OUT + '/admin/index.html', 'w', encoding='utf8').write('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Admin | Lupita\'s Valley</title><link rel="stylesheet" href="/assets/ordering/admin.css"></head><body><main id="ro-admin"></main><script src="/assets/config.js"></script><script src="/assets/ordering/admin.js" defer></script></body></html>')
     # legal
@@ -375,8 +377,8 @@ def extras():
     today = datetime.date.today().isoformat()
     sm = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' + ''.join(f'<url><loc>{DOMAIN}{p}</loc><lastmod>{today}</lastmod></url>\n' for p in ps) + '</urlset>\n'
     open(OUT + '/sitemap.xml', 'w').write(sm)
-    open(OUT + '/robots.txt', 'w').write(f'User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /kitchen\nSitemap: {DOMAIN}/sitemap.xml\n')
-    open(OUT + '/robots.live.txt', 'w').write(f'User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /kitchen\nSitemap: {DOMAIN}/sitemap.xml\n')  # launch: copy over robots.txt
+    open(OUT + '/robots.txt', 'w').write(f'User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /kitchen\nDisallow: /driver\nSitemap: {DOMAIN}/sitemap.xml\n')
+    open(OUT + '/robots.live.txt', 'w').write(f'User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /kitchen\nDisallow: /driver\nSitemap: {DOMAIN}/sitemap.xml\n')  # launch: copy over robots.txt
     open(OUT + '/llms.txt', 'w', encoding='utf8').write(f"# Lupita's Valley | Mexican restaurant in Heber City, UT\n\nAddress: {ADDR1}, {ADDR2}\nPhone: +14356543465\nHours: Mon-Thu 10:30 AM-9 PM; Fri-Sat 10:30 AM-10 PM; Sun closed\n\n- [Full Menu]({DOMAIN}/menu)\n- [Reservations]({DOMAIN}/reservations)\n- [Catering]({DOMAIN}/catering)\n- [Contact]({DOMAIN}/page/contact-us)\n")
     open(OUT + '/_redirects', 'w').write(''.join(f'{a} {b} 301\n' for a, b in REDIRECTS))
     json.dump({'cleanUrls': False, 'trailingSlash': False, 'headers': VERCEL_HEADERS, 'redirects': [{'source': a, 'destination': b, 'permanent': True} for a, b in REDIRECTS]}, open(OUT + '/vercel.json', 'w'), indent=2)
@@ -387,7 +389,7 @@ def extras():
         for fn in os.listdir(f'{A}/{d}'): shutil.copy(f'{A}/{d}/{fn}', f'{OUT}/{d}/{fn}')
     os.makedirs(OUT + '/assets/ordering', exist_ok=True)
     shutil.copytree(os.path.join(HERE, '..', '..', 'web', 'onboarding'), OUT + '/onboarding', dirs_exist_ok=True)
-    for fn in ('ordering.js', 'ordering.css', 'order-status.js', 'guest-tools.js', 'reserve.js', 'unsubscribe.js', 'kitchen.js', 'kitchen.css', 'admin.js', 'admin.css'):
+    for fn in ('ordering.js', 'ordering.css', 'order-status.js', 'guest-tools.js', 'reserve.js', 'unsubscribe.js', 'kitchen.js', 'kitchen.css', 'admin.js', 'admin.css', 'qrcode.js', 'track.js', 'driver.js', 'driver.css'):
         shutil.copy(os.path.join(HERE, '..', '..', 'web', fn), OUT + '/assets/ordering/' + fn)
     shutil.copytree(HERE + '/src/fonts', OUT + '/assets/fonts', dirs_exist_ok=True)
     os.makedirs(OUT + '/img/app', exist_ok=True)

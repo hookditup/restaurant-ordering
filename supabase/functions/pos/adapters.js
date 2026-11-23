@@ -1,6 +1,7 @@
 // POS connectors. Every connector takes the same order shape and does the same jobs:
 //   test(ctx)          check the connection works; returns a short description
-//   send(ctx, order)   put a paid online order into the POS / printer; returns { external_id }
+//   send(ctx, order)   put an online order into the POS / printer; returns { external_id }. Phone orders
+//                      (payment_status 'unpaid') go in open, to be paid at the counter.
 // ctx = { settings, token, http } where http(method, url, { headers, body }) -> { ok, status, json }.
 // Adding a POS = adding one object here. Prices are sent exactly as charged online,
 // so the POS shows what the guest paid even when its own menu prices differ.
@@ -40,8 +41,8 @@ export function ticketText(o, width = 42) {
   };
   const lr = (a, b) => { a = String(a); b = String(b); const room = w - b.length - 1; return (a.length > room ? a.slice(0, room) : a.padEnd(room)) + ' ' + b; };
   const rows = [
-    center(o.restaurant.name), center(`ONLINE ORDER #${o.order_no}`), line,
-    `${o.fulfillment === 'delivery' ? 'DELIVERY' : 'PICKUP'}: ${when(o.pickup_at, o.restaurant.timezone)}`,
+    center(o.restaurant.name), center(`${o.channel === 'phone' ? 'PHONE' : 'ONLINE'} ORDER #${o.order_no}`), line,
+    o.fulfillment === 'dine_in' ? `TABLE ${o.table_label ?? ''}` : `${o.fulfillment === 'delivery' ? 'DELIVERY' : o.catering ? 'CATERING PICKUP' : 'PICKUP'}: ${when(o.pickup_at, o.restaurant.timezone)}`,
     guestName(o), o.phone || '',
   ];
   if (o.fulfillment === 'delivery' && o.delivery_address) {
@@ -63,7 +64,7 @@ export function ticketText(o, width = 42) {
   if (o.guest_fee_cents) rows.push(lr('Service fee', money(o.guest_fee_cents)));
   rows.push(lr('Tax', money(o.tax_cents)));
   if (o.tip_cents) rows.push(lr('Tip', money(o.tip_cents)));
-  rows.push(lr('TOTAL', money(o.total_cents)), center('PAID ONLINE'), '', '', '');
+  rows.push(lr('TOTAL', money(o.total_cents)), center(o.payment_status === 'unpaid' ? '*** DUE AT PICKUP ***' : 'PAID ONLINE'), '', '', '');
   return rows.join('\n') + '\n';
 }
 
@@ -91,7 +92,7 @@ export const clover = {
   async send(ctx, o) {
     clover.check(ctx.settings, ctx.token);
     const base = `${cloverBase(ctx.settings)}/v3/merchants/${ctx.settings.merchant_id}`, auth = { Authorization: `Bearer ${ctx.token}` };
-    const note = `${o.fulfillment === 'delivery' ? 'DELIVERY' : 'PICKUP'} ${when(o.pickup_at, o.restaurant.timezone)} · ${guestName(o)} ${o.phone || ''} · PAID ONLINE ${money(o.total_cents)} (incl. tax${o.tip_cents ? `, ${money(o.tip_cents)} tip` : ''})${o.note ? ` · ${o.note}` : ''}`;
+    const note = `${o.fulfillment === 'delivery' ? 'DELIVERY' : 'PICKUP'} ${when(o.pickup_at, o.restaurant.timezone)} · ${guestName(o)} ${o.phone || ''} · ${o.payment_status === 'unpaid' ? 'DUE AT PICKUP' : 'PAID ONLINE'} ${money(o.total_cents)} (incl. tax${o.tip_cents ? `, ${money(o.tip_cents)} tip` : ''})${o.note ? ` · ${o.note}` : ''}`;
     const created = await call(ctx, 'POST', `${base}/orders`, {
       state: 'open', title: `Online #${o.order_no} ${guestName(o)}`.slice(0, 127), note: note.slice(0, 255),
       ...(ctx.settings.order_type_id ? { orderType: { id: ctx.settings.order_type_id } } : {}),
@@ -215,6 +216,7 @@ export const square = {
     const base = squareBase(ctx.settings), auth = { Authorization: `Bearer ${ctx.token}` };
     const { order } = await call(ctx, 'POST', `${base}/v2/orders`, square.orderBody(ctx, o), auth);
     const expected = o.total_cents - o.tip_cents;
+    if (o.payment_status === 'unpaid') return { external_id: order.id }; // phone order: paid at the counter in Square
     if (order.total_money?.amount !== expected) throw new PosError(`Square totaled ${money(order.total_money?.amount ?? 0)}, online total was ${money(expected)}. Order ${order.id} was created but not marked paid.`);
     await call(ctx, 'POST', `${base}/v2/payments`, {
       idempotency_key: `pay-${o.id}`, source_id: 'EXTERNAL', external_details: { type: 'OTHER', source: 'Online ordering' },
@@ -321,8 +323,8 @@ export const toast = {
     const body = toast.orderBody(ctx, o, menu, ctx.links || new Map());
     const priced = await call(ctx, 'POST', `${base}/orders/v2/prices`, body, h);
     const toastTotal = Math.round((priced.checks?.[0]?.totalAmount ?? NaN) * 100), paid = o.total_cents - o.tip_cents;
-    if (toastTotal !== paid) throw new PosError(`Toast prices this order at ${Number.isNaN(toastTotal) ? 'an unknown amount' : money(toastTotal)}; the guest paid ${money(paid)} (before tip). Not sent, so Toast won't show a balance due. It's on the Kitchen screen. Online prices or discounts need to match Toast.`);
-    body.checks[0].payments = [{ type: 'OTHER', otherPayment: { guid: ctx.settings.payment_type_guid }, amount: dollars(paid), tipAmount: dollars(o.tip_cents || 0), amountTendered: dollars(paid) }];
+    if (o.payment_status !== 'unpaid' && toastTotal !== paid) throw new PosError(`Toast prices this order at ${Number.isNaN(toastTotal) ? 'an unknown amount' : money(toastTotal)}; the guest paid ${money(paid)} (before tip). Not sent, so Toast won't show a balance due. It's on the Kitchen screen. Online prices or discounts need to match Toast.`);
+    if (o.payment_status !== 'unpaid') body.checks[0].payments = [{ type: 'OTHER', otherPayment: { guid: ctx.settings.payment_type_guid }, amount: dollars(paid), tipAmount: dollars(o.tip_cents || 0), amountTendered: dollars(paid) }];
     const created = await call(ctx, 'POST', `${base}/orders/v2/orders`, body, h);
     return { external_id: created.guid || null };
   },

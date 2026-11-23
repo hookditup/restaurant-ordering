@@ -188,7 +188,7 @@
   }
 
   const slug = (n) => n.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-  const canDeliver = () => ['drive', 'test'].includes(deliveryMode) && deliverySlots.length > 0;
+  const canDeliver = () => ['drive', 'test', 'own'].includes(deliveryMode) && deliverySlots.length > 0;
   const modes = () => [['pickup', 'Pickup'], ...(canDeliver() ? [['delivery', 'Delivery']] : []), ...(cateringSlots.length ? [['catering', 'Catering']] : [])];
   const mode = () => (catering ? 'catering' : fulfillment);
   function setMode(m) {
@@ -411,7 +411,7 @@
       f.onsubmit = async (e) => {
         e.preventDefault();
         f.querySelector('.ro-add').disabled = true;
-        const r = await post({ action: 'acct_verify', ...who, code: f.elements.code.value }).catch(() => null);
+        const r = await post({ action: 'acct_verify', ...who, code: f.elements.code.value, attribution: window.HRA ? window.HRA.get() : undefined }).catch(() => null);
         f.querySelector('.ro-add').disabled = false;
         if (!r?.ok) { err.textContent = r?.error || 'Something went wrong. Please try again.'; return; }
         saveToken(r.session); setAccount(r.profile); await loadExtras(); syncCart(); render(); updateCartButton();
@@ -495,7 +495,7 @@
         <label class="ro-field">Last name<input name="last_name" autocomplete="family-name" required value="${esc(draft.last_name)}"></label></div>
         <label class="ro-field">Mobile phone<input name="phone" type="tel" autocomplete="tel" required value="${esc(draft.phone)}"></label>
         <label class="ro-field">Email for your receipt<input name="email" type="email" autocomplete="email" required value="${esc(draft.email)}"></label>
-        ${fulfillment === 'delivery' ? `<fieldset class="ro-address"><legend>Delivery address</legend>
+        ${fulfillment === 'delivery' ? `<fieldset class="ro-address"><legend>Delivery address</legend>${deliveryMode === 'own' && (menu.restaurant.own_delivery_zips || []).length ? `<p class="ro-note">We deliver to ZIP code${menu.restaurant.own_delivery_zips.length > 1 ? 's' : ''} ${esc(menu.restaurant.own_delivery_zips.map((z) => z.zip).join(', '))}.</p>` : ''}
           ${acct?.addresses?.length ? `<label class="ro-field">Saved address<select id="ro-saved"><option value="">Choose one</option>${acct.addresses.map((a, n) => `<option value="${n}">${esc(`${a.street}${a.unit ? ` ${a.unit}` : ''}, ${a.city}`)}</option>`).join('')}</select></label>` : ''}
           <label class="ro-field">Street address<input name="street" autocomplete="address-line1" required value="${esc(draft.street)}"></label>
           <label class="ro-field">Apartment or unit<input name="unit" autocomplete="address-line2" value="${esc(draft.unit)}"></label>
