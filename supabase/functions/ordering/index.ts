@@ -17,7 +17,7 @@
 //   ATTRIBUTION_URL + ATTRIBUTION_KEYS (marketing attribution; JSON map of restaurant slug -> API key).
 // With no Stripe key, a restaurant in test mode marks orders as test-paid. Live mode never does.
 import { PayError, PROCESSORS } from './payments.js';
-import { addressLine, applyGift, cleanAddress, cleanCode, cleanGuest, makeCode, NEXT, normPhone, OrderError, pickupSlots, priceCart, promoDiscount, totals, validPickup, windowsFor } from './core.js';
+import { addressLine, applyGift, cleanAddress, cleanCode, cleanGuest, isOpenAt, makeCode, NEXT, normPhone, OrderError, pickupSlots, priceCart, promoDiscount, totals, validPickup, windowsFor } from './core.js';
 
 const SB_URL = Deno.env.get('SUPABASE_URL')!;
 const SB_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -295,6 +295,47 @@ async function paymentSweep() {
   return { payments_confirmed: paid, payments_expired: expired };
 }
 
+// ---------- owner's weekly report ----------
+const pct = (now: number, before: number) => (before ? ` (${now >= before ? '+' : ''}${Math.round((now - before) / before * 100)}% vs the week before)` : '');
+const KIND_NAMES: Record<string, string> = { campaign: 'campaigns', winback: 'we-miss-you', birthday: 'birthday', points: 'reward reminders', cart: 'left-in-cart', review: 'review requests', welcome: 'welcome' };
+function reportText(name: string, from: Date, to: Date, tz: string, x: any) {
+  const d = (t: Date) => t.toLocaleDateString('en-US', { timeZone: tz, month: 'short', day: 'numeric' });
+  const types = Object.entries(x.by_type).map(([k, n]) => `${n} ${k === 'dine_in' ? 'at the table' : k}`).join(', ');
+  const mk = Object.entries(x.marketing_by_kind).map(([k, n]) => `${n} from ${KIND_NAMES[k] ?? k}`).join(', ');
+  return [`${name}: your week online, ${d(from)} to ${d(new Date(to.getTime() - 1))}`, '',
+    `Online sales: ${money(x.sales_cents)}${pct(x.sales_cents, x.prev_sales_cents)}`,
+    `Orders: ${x.orders}${types ? ` (${types})` : ''}${pct(x.orders, x.prev_orders)}`,
+    `Average order: ${money(x.avg_cents)} · Tips for your team: ${money(x.tips_cents)}`,
+    `Guests: ${x.new_guests} new, ${x.returning_guests} returning`,
+    x.top_items.length ? `Top dishes: ${x.top_items.map((i: any) => `${i.name} (${i.qty})`).join(', ')}` : '',
+    '', `Marketing brought back ${x.marketing_orders} order${x.marketing_orders === 1 ? '' : 's'} worth ${money(x.marketing_sales_cents)}${mk ? ` (${mk})` : ''}.`,
+    `Messages sent: ${x.messages_sent} · Review requests: ${x.reviews_asked}`,
+    `New: ${x.new_accounts} guest accounts, ${x.new_rewards} rewards members, ${x.reservations} reservations`,
+    '', 'Marketing counts an order when the guest got one of your texts or emails in the 3 days before it.',
+  ].filter((l, i, a) => l !== '' || a[i - 1] !== '').join('\n');
+}
+/** Last full Monday-to-Monday week in the restaurant's time zone. */
+function lastWeek(tz: string) {
+  const ymd = new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(new Date());
+  const today = new Date(`${ymd}T12:00:00Z`), dow = (today.getUTCDay() + 6) % 7;
+  const mon = new Date(today.getTime() - dow * 86400000), prevMon = new Date(mon.getTime() - 7 * 86400000);
+  const at = (d: Date) => { const y = d.toISOString().slice(0, 10); const guess = new Date(`${y}T00:00:00Z`); const off = new Date(guess.toLocaleString('en-US', { timeZone: tz })).getTime() - new Date(guess.toLocaleString('en-US', { timeZone: 'UTC' })).getTime(); return new Date(guess.getTime() - off); };
+  return { from: at(prevMon), to: at(mon) };
+}
+async function sendReport(r: any, to: string | null) {
+  if (!to) return false;
+  const { from, to: end } = lastWeek(r.timezone);
+  const x = await rpc('owner_report', { rid: r.id, p_from: from.toISOString(), p_to: end.toISOString() });
+  await sendEmail(to, `${r.name}: your week online (${money(x.sales_cents)} in sales)`, reportText(r.name, from, end, r.timezone, x), null);
+  return true;
+}
+async function weeklyReports() {
+  const rs = await db('restaurants?select=id,name,timezone,report_email,alert_email&active=eq.true&test_mode=eq.false&report_enabled=eq.true');
+  let sent = 0;
+  for (const r of rs) if (await sendReport(r, r.report_email || r.alert_email).catch((e) => { console.error('report', r.id, e); return false; })) sent++;
+  return { reports_sent: sent };
+}
+
 // ---------- DoorDash Drive ----------
 const b64url = (b: Uint8Array) => btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 async function doordashToken() {
@@ -368,8 +409,8 @@ async function markPaid(o: any, payment_status: string, intent?: string, ref?: s
   await log(o.id, 'payment', payment_status);
   await reportConversion(r.slug, orderConversion(rows[0], 'completed'), rows[0].attribution, o.id);
   await sendEmail(o.email, `${r.name} order ${o.order_no} received`,
-    `Thanks ${o.first_name}! We got your order. ${o.fulfillment === 'delivery' ? 'Delivery' : 'Pickup'}: ${timeText(o.pickup_at, r.timezone)}.\nTotal: ${money(o.total_cents)}${o.gift_applied_cents ? ` (${money(o.gift_applied_cents)} paid by gift card)` : ''}\n\nTrack it: ${r.site_url}/order/?t=${o.token}`, o.id);
-  await sendEmail(r.alert_email, `New online order ${o.order_no}`, `${o.first_name} ${o.last_name}, ${o.fulfillment === 'delivery' ? 'delivery' : 'pickup'} ${timeText(o.pickup_at, r.timezone)}, ${money(o.total_cents)}.`, o.id);
+    `Thanks ${o.first_name}! We got your order. ${o.fulfillment === 'dine_in' ? `We'll bring it to table ${o.table_label}` : `${o.fulfillment === 'delivery' ? 'Delivery' : o.catering ? 'Catering pickup' : 'Pickup'}: ${timeText(o.pickup_at, r.timezone)}`}.\nTotal: ${money(o.total_cents)}${o.gift_applied_cents ? ` (${money(o.gift_applied_cents)} paid by gift card)` : ''}\n\nTrack it: ${r.site_url}/order/?t=${o.token}`, o.id);
+  await sendEmail(r.alert_email, `New online ${o.catering ? 'catering ' : ''}order ${o.order_no}`, `${o.first_name} ${o.last_name}, ${o.fulfillment === 'dine_in' ? `table ${o.table_label}` : `${o.fulfillment === 'delivery' ? 'delivery' : 'pickup'} ${timeText(o.pickup_at, r.timezone)}`}, ${money(o.total_cents)}.`, o.id);
 }
 
 async function handleStripeHook(req: Request) {
@@ -652,11 +693,13 @@ async function checkout(req: Request, body: any) {
   const menu = await menuFor(body.restaurant);
   const r = menu.restaurant;
   if (!r.accepting_orders) throw new OrderError('Online ordering is paused right now. Please call us.');
-  const pickup_at = String(body.pickup_at ?? '');
   const delivering = body.fulfillment === 'delivery';
-  if (!pickup_at || !validPickup(delivering ? forDelivery(r) : r, pickup_at)) throw new OrderError('That time is no longer available. Please pick another.');
+  const { pickup_at, dineIn, table, catering } = whenFor(r, body);
   const guest = cleanGuest(body.guest);
+  if (dineIn) guest.note = [`TABLE ${table}`, guest.note].filter(Boolean).join(' · ');
+  if (catering) guest.note = ['CATERING', guest.note].filter(Boolean).join(' · ');
   const lines = priceCart(menu, body.items, pickup_at);
+  if (catering && lines.reduce((n, l) => n + l.line_total_cents, 0) < r.catering_min_cents) throw new OrderError(`Catering orders start at ${money(r.catering_min_cents)}.`);
   const address = delivering ? cleanAddress(body.address) : null;
   const fee = address ? await feeFor(r, address, guest.phone, lines) : 0;
   const c = await priceWithCredits(r.id, lines, r, body.tip_cents, guest.phone, body.rewards_code, body.gift_code, fee, body.promo_code);
@@ -665,7 +708,8 @@ async function checkout(req: Request, body: any) {
   const [full] = await db(`restaurants?select=stripe_account_id,site_url&id=eq.${r.id}`);
   const [o] = await insert('orders', {
     restaurant_id: r.id, pickup_at: new Date(pickup_at).toISOString(), ...guest, ...t, gift_applied_cents: c.gift_applied_cents,
-    amount_due_cents: c.amount_due_cents, test_mode: r.test_mode, fulfillment: delivering ? 'delivery' : 'pickup', delivery_address: address,
+    amount_due_cents: c.amount_due_cents, test_mode: r.test_mode, fulfillment: dineIn ? 'dine_in' : delivering ? 'delivery' : 'pickup', delivery_address: address,
+    table_label: dineIn ? table : null, catering,
     attribution: cleanAttribution(body.attribution, req),
     promo_code_id: c.promo?.id ?? null, promo_cents: c.promo_cents, sms_updates: body.consent?.sms_updates === true,
   });
@@ -732,6 +776,26 @@ async function checkout(req: Request, body: any) {
 }
 
 const forDelivery = (r: any) => ({ ...r, pickup_lead_minutes: r.delivery_lead_minutes });
+const forCatering = (r: any) => ({ ...r, pickup_lead_minutes: r.catering_lead_hours * 60 });
+/** When the order is for: a chosen pickup/delivery time, a catering date, or right now at a table (dine-in QR). */
+function whenFor(r: any, body: any) {
+  if (body.fulfillment === 'dine_in') {
+    const table = text(body.table, 12);
+    if (!r.dine_in_enabled) throw new OrderError('Ordering from the table is not available right now.');
+    if (!table) throw new OrderError('Scan the code on your table to order.');
+    const now = new Date();
+    if (!isOpenAt(r.hours, now, r.timezone, r.exceptions)) throw new OrderError("We're closed right now.");
+    return { pickup_at: now.toISOString(), dineIn: true, table, catering: false };
+  }
+  const pickup_at = String(body.pickup_at ?? '');
+  if (body.catering === true) {
+    if (!r.catering_enabled || body.fulfillment === 'delivery') throw new OrderError('Catering orders are not available right now.');
+    if (!pickup_at || !validPickup(forCatering(r), pickup_at, new Date(), r.catering_days_ahead, 30, 3000)) throw new OrderError('That catering time is no longer available. Please pick another.');
+    return { pickup_at, dineIn: false, table: null, catering: true };
+  }
+  if (!pickup_at || !validPickup(body.fulfillment === 'delivery' ? forDelivery(r) : r, pickup_at)) throw new OrderError('That time is no longer available. Please pick another.');
+  return { pickup_at, dineIn: false, table: null, catering: false };
+}
 async function feeFor(r: any, address: any, phone: string, lines: any[]) {
   const value = lines.reduce((s, l) => s + l.line_total_cents, 0);
   if (value < r.delivery_min_cents) throw new OrderError(`Delivery orders start at ${money(r.delivery_min_cents)}.`);
@@ -1055,7 +1119,7 @@ async function staffTools(req: Request, body: any) {
   const SECTION: Record<string, string> = {
     reservations: 'reservations', reservation: 'reservations', messages: 'messages', message: 'messages',
     rewards_find: 'rewards', rewards_adjust: 'rewards', gift_find: 'gift', gift_redeem: 'gift', gift_issue: 'gift',
-    refund: 'orders', pay_test: 'settings', res_status: 'reservations', msg_settings: 'settings', msg_test: 'campaigns', campaign_send: 'campaigns', message_customer: 'customers',
+    refund: 'orders', pay_test: 'settings', report_send: 'dashboard', res_status: 'reservations', msg_settings: 'settings', msg_test: 'campaigns', campaign_send: 'campaigns', message_customer: 'customers',
     team_list: 'team', team_save: 'team', team_remove: 'team',
     mkt_report: 'marketing', mkt_campaigns: 'marketing', mkt_link: 'marketing', mkt_spend: 'marketing',
   };
@@ -1090,6 +1154,12 @@ async function staffTools(req: Request, body: any) {
       return json({ ok: true, status: to });
     }
     case 'refund': return await refundOrder(r, me, body);
+    case 'report_send': {
+      const [x] = await db(`restaurants?select=id,name,timezone&id=eq.${r.id}`);
+      if (!RESEND || !FROM) throw new OrderError('Email is not connected yet, so the report cannot be sent.');
+      await sendReport(x, me.email);
+      return json({ ok: true, message: `Sent last week's report to ${me.email}.` });
+    }
     case 'pay_test': {
       const pay = await payFor(r.id);
       if (!pay) return json({ ok: true, message: STRIPE ? 'Using Stripe.' : 'Stripe is not set up yet.' });
@@ -1314,8 +1384,8 @@ async function kitchen(req: Request, body: any) {
   }
   if (to === 'completed') await log(o.id, 'rewards', 'earned', { points: await rpc('order_earn_points', { p_order: o.id }) });
   const [r] = await db(`restaurants?select=name,site_url,phone&id=eq.${o.restaurant_id}`);
-  if (to === 'ready' && o.sms_updates) await automationSms(o.restaurant_id, o.customer_id, o.phone, 'order_ready', { order_no: o.order_no }, `ready:${o.id}`, false);
-  if (to === 'ready') await sendEmail(o.email, `Your ${r.name} order is ready`, `Hi ${o.first_name}, order ${o.order_no} is ready${o.fulfillment === 'delivery' ? ' and waiting for your driver' : ' for pickup'}.`, o.id);
+  if (to === 'ready' && o.sms_updates && o.fulfillment !== 'dine_in') await automationSms(o.restaurant_id, o.customer_id, o.phone, 'order_ready', { order_no: o.order_no }, `ready:${o.id}`, false);
+  if (to === 'ready' && o.fulfillment !== 'dine_in') await sendEmail(o.email, `Your ${r.name} order is ready`, `Hi ${o.first_name}, order ${o.order_no} is ready${o.fulfillment === 'delivery' ? ' and waiting for your driver' : ' for pickup'}.`, o.id);
   if (to === 'cancelled') {
     await sendEmail(o.email, `Your ${r.name} order was cancelled`,
       `Hi ${o.first_name}, we had to cancel order ${o.order_no}. ${up.cancel_reason}. ${o.payment_status === 'paid' ? 'A full refund is on its way to your card.' : ''}${o.gift_applied_cents ? ' Your gift card balance has been restored.' : ''}\nQuestions? Call ${r.phone}.`, o.id);
@@ -1336,21 +1406,23 @@ Deno.serve(async (req) => {
       await patch('customers', `unsub_token=eq.${qs.get('unsub')!.replace(/[^a-f0-9]/g, '')}`, { email_marketing: false, email_unsub_at: new Date().toISOString() });
       return json({ ok: true });
     }
-    if (qs.get('job') === 'tick') {
+    if (qs.get('job') === 'tick' || qs.get('job') === 'weekly') {
       const key = JOB_KEY || (await rpc('job_key', {}).catch(() => null));
       if (!key || req.headers.get('x-job-key') !== key) return json({ ok: false }, 401);
-      return json({ ok: true, ...(await tick()) });
+      return json({ ok: true, ...(qs.get('job') === 'weekly' ? await weeklyReports() : await tick()) });
     }
     const body = await req.json().catch(() => ({}));
     switch (String(body.action ?? '')) {
       case 'slots': {
         const { restaurant } = await menuFor(body.restaurant);
         const delivery_mode = deliveryMode(restaurant);
-        return json({ ok: true, accepting: restaurant.accepting_orders, slots: pickupSlots(restaurant), delivery_mode, delivery_slots: ['drive', 'test'].includes(delivery_mode) ? pickupSlots(forDelivery(restaurant)) : [] });
+        return json({ ok: true, accepting: restaurant.accepting_orders, slots: pickupSlots(restaurant), delivery_mode, delivery_slots: ['drive', 'test'].includes(delivery_mode) ? pickupSlots(forDelivery(restaurant)) : [],
+          catering_slots: restaurant.catering_enabled ? pickupSlots(forCatering(restaurant), new Date(), restaurant.catering_days_ahead, 30, 3000) : [],
+          open_now: isOpenAt(restaurant.hours, new Date(), restaurant.timezone, restaurant.exceptions) });
       }
       case 'quote': {
         const menu = await menuFor(body.restaurant);
-        const when = body.pickup_at || pickupSlots(menu.restaurant)[0];
+        const when = body.fulfillment === 'dine_in' ? new Date().toISOString() : body.pickup_at || pickupSlots(menu.restaurant)[0];
         if (!when) throw new OrderError('We have no pickup times available right now.');
         if (body.rewards_code || body.gift_code) await limited(req, 'codes', 30);
         const lines = priceCart(menu, body.items, when);
@@ -1369,7 +1441,7 @@ Deno.serve(async (req) => {
         if (!token) return json({ ok: false, error: 'Order not found.' }, 404);
         const [w] = await db(`orders?select=*&token=eq.${token}&status=eq.awaiting_payment&payment_provider=neq.stripe`);
         if (w && (await rpc('rate_limit', { p_key: `paycheck:${w.id}`, p_max: 1, p_seconds: 8 }))) await checkPayment('order', w).catch((e) => console.error('pay check', e instanceof Error ? e.message : e));
-        const rows = await db(`orders?select=order_no,status,payment_status,pickup_at,first_name,subtotal_cents,discount_cents,gift_applied_cents,amount_due_cents,delivery_fee_cents,fulfillment,delivery_address,delivery_tracking_url,delivery_status,tax_cents,guest_fee_cents,tip_cents,total_cents,test_mode,cancel_reason,restaurant:restaurants(name,phone,address,timezone),items:order_items(name,qty,line_total_cents,options,note,menu_item_id,option_ids)&token=eq.${token}`);
+        const rows = await db(`orders?select=order_no,status,payment_status,pickup_at,table_label,catering,first_name,subtotal_cents,discount_cents,gift_applied_cents,amount_due_cents,delivery_fee_cents,fulfillment,delivery_address,delivery_tracking_url,delivery_status,tax_cents,guest_fee_cents,tip_cents,total_cents,test_mode,cancel_reason,restaurant:restaurants(name,phone,address,timezone),items:order_items(name,qty,line_total_cents,options,note,menu_item_id,option_ids)&token=eq.${token}`);
         return rows?.[0] ? json({ ok: true, order: rows[0] }) : json({ ok: false, error: 'Order not found.' }, 404);
       }
       case 'kitchen':

@@ -238,7 +238,7 @@
     winback: ['We miss you', "Goes to guests whose last online order was this many days ago. Each guest gets it at most once every 60 days.", 'days since last order'],
     birthday: ['Birthday', 'Sent this many days before the birthday guests gave you.', 'days before birthday'],
     review: ['Review request', 'Asks for a review this many hours after an order is completed. At most once a month per guest.', 'hours after the order'],
-    cart: ['Left in cart', 'Reminds signed-in guests who added food but did not order, this many minutes later (30 works well). At most once a week per guest. Texts need their deals-text consent.', 'minutes after they left'],
+    cart: ['Left in cart', 'Reminds signed-in guests who added food but did not order, this many minutes later (15 works well). At most once a week per guest. Texts need their deals-text consent.', 'minutes after they left'],
     points: ['Reward waiting', 'Reminds rewards members who have enough points for a reward and haven\'t ordered in this many days.', 'days since last order'],
   };
   const FIELDS = '{first_name}, {restaurant}, {link}';
@@ -821,14 +821,32 @@
         <section class="a-box"><h2>Hours</h2><p class="a-help">Leave both times empty for a closed day. Lunch and dinner menu times are set separately.</p>${DAYS.map(([k, t]) => { const h = (s.hours[k] || [])[0] || ['', '']; return `<fieldset class="a-day"><legend>${t}</legend><label>Open<input type="time" name="o_${k}" value="${h[0]}"></label><label>Close<input type="time" name="c_${k}" value="${h[1]}"></label></fieldset>`; }).join('')}</section>
         <section class="a-box"><h2>Orders</h2><div class="a-form">${num('pickup_lead_minutes', 'Pickup lead time (minutes)', s.pickup_lead_minutes, 'min="0" max="240"')}${txt('alert_email', 'New order email', s.alert_email, 'email')}${txt('forms_email', 'Website form email', s.forms_email, 'email')}</div></section>
         <section class="a-box"><h2>Delivery</h2><div class="a-form"><label class="a-check"><input type="checkbox" name="delivery_enabled"${s.delivery_enabled ? ' checked' : ''}> Offer delivery at checkout</label>${num('delivery_lead_minutes', 'Delivery lead time (minutes)', s.delivery_lead_minutes, 'min="0" max="240"')}${num('delivery_min', 'Delivery minimum ($)', s.delivery_min_cents / 100, 'min="0" step="0.01"')}${txt('doordash_store_url', 'DoorDash store link', s.doordash_store_url, 'url')}</div></section>
+        <section class="a-box"><h2>Order at the table</h2><p class="a-help">Guests scan the code on their table, order and pay, and the order shows on the kitchen screen with the table number.</p><div class="a-form"><label class="a-check"><input type="checkbox" name="dine_in_enabled"${s.dine_in_enabled ? ' checked' : ''}> Take orders from table QR codes</label>${num('table_count', 'Number of tables', s.table_count, 'min="0" max="200"')}</div>
+          <button type="button" class="a-alt" id="a-qr">Print table QR codes</button><div id="a-qr-sheet"></div></section>
+        <section class="a-box"><h2>Catering</h2><p class="a-help">Adds a Catering choice to the menu: guests order days ahead for pickup and pay online.</p><div class="a-form"><label class="a-check"><input type="checkbox" name="catering_enabled"${s.catering_enabled ? ' checked' : ''}> Take catering orders online</label>${num('catering_min', 'Catering minimum ($)', s.catering_min_cents / 100, 'min="0" step="1"')}${num('catering_lead_hours', 'Notice needed (hours)', s.catering_lead_hours, 'min="1" max="720"')}${num('catering_days_ahead', 'How far ahead (days)', s.catering_days_ahead, 'min="1" max="120"')}</div></section>
+        <section class="a-box"><h2>Weekly report</h2><p class="a-help">Every Monday morning: last week's online sales, orders, new and returning guests, top dishes, and what texts and emails brought back.</p><div class="a-form"><label class="a-check"><input type="checkbox" name="report_enabled"${s.report_enabled ? ' checked' : ''}> Email the weekly report</label>${txt('report_email', 'Send it to (blank = new order email)', s.report_email, 'email')}</div>
+          <button type="button" class="a-alt" id="a-report">Email me last week's report now</button></section>
         <section class="a-box"><h2>Rewards</h2><div class="a-form">${num('rewards_points_per_dollar', 'Points per $1', s.rewards_points_per_dollar, 'min="0" max="100"')}${num('rewards_redeem_points', 'Points for a reward', s.rewards_redeem_points, 'min="1"')}${num('rewards_redeem', 'Reward value ($)', s.rewards_redeem_cents / 100, 'min="0.01" step="0.01"')}</div></section>
         <section class="a-box"><h2>Gift cards</h2><div class="a-form">${num('gift_min', 'Smallest online card ($)', s.gift_min_cents / 100, 'min="1"')}${num('gift_max', 'Largest online card ($)', s.gift_max_cents / 100, 'min="1"')}</div></section>
         <button>Save settings</button></form>`;
       view().querySelector('#a-set').onsubmit = (e) => { e.preventDefault(); const f = e.target.elements; attempt(async () => {
         const hours = {};
         for (const [k] of DAYS) { const o = f[`o_${k}`].value, c = f[`c_${k}`].value; if (!!o !== !!c) throw new Error('Enter both open and close times, or neither.'); hours[k] = o ? [[o, c]] : []; }
-        await rpc('admin_save_settings', { p_restaurant: r.id, p: { hours, pickup_lead_minutes: f.pickup_lead_minutes.value, alert_email: f.alert_email.value, forms_email: f.forms_email.value, delivery_enabled: f.delivery_enabled.checked, delivery_lead_minutes: f.delivery_lead_minutes.value, delivery_min_cents: toCents(f.delivery_min.value), doordash_store_url: f.doordash_store_url.value, rewards_points_per_dollar: f.rewards_points_per_dollar.value, rewards_redeem_points: f.rewards_redeem_points.value, rewards_redeem_cents: toCents(f.rewards_redeem.value), gift_min_cents: toCents(f.gift_min.value), gift_max_cents: toCents(f.gift_max.value) } });
+        await rpc('admin_save_settings', { p_restaurant: r.id, p: { hours, pickup_lead_minutes: f.pickup_lead_minutes.value, alert_email: f.alert_email.value, forms_email: f.forms_email.value, delivery_enabled: f.delivery_enabled.checked, delivery_lead_minutes: f.delivery_lead_minutes.value, delivery_min_cents: toCents(f.delivery_min.value), doordash_store_url: f.doordash_store_url.value, rewards_points_per_dollar: f.rewards_points_per_dollar.value, rewards_redeem_points: f.rewards_redeem_points.value, rewards_redeem_cents: toCents(f.rewards_redeem.value), gift_min_cents: toCents(f.gift_min.value), gift_max_cents: toCents(f.gift_max.value),
+          dine_in_enabled: f.dine_in_enabled.checked, table_count: f.table_count.value || 0, catering_enabled: f.catering_enabled.checked, catering_min_cents: toCents(f.catering_min.value),
+          catering_lead_hours: f.catering_lead_hours.value, catering_days_ahead: f.catering_days_ahead.value, report_enabled: f.report_enabled.checked, report_email: f.report_email.value } });
       }); };
+      view().querySelector('#a-report').onclick = () => attempt(async () => { const x = await staff('report_send'); say(x.message); }, 'Sent.');
+      view().querySelector('#a-qr').onclick = async () => {
+        const n = +view().querySelector('[name=table_count]').value;
+        if (!n) return say('Enter the number of tables first.', true);
+        if (!window.qrcode) await new Promise((ok, no) => { const sc = document.createElement('script'); sc.src = '/assets/ordering/qrcode.js'; sc.onload = ok; sc.onerror = no; document.head.append(sc); });
+        const base = location.origin;
+        const box = view().querySelector('#a-qr-sheet');
+        box.innerHTML = `<p class="a-help">Each code opens ${esc(base)}/menu/?table=… ${s.dine_in_enabled ? '' : '<strong>Turn on "Take orders from table QR codes" and save before putting these out.</strong>'}</p><button type="button" id="a-qr-print">Print</button>
+          <div class="a-qr-grid">${Array.from({ length: n }, (_, i) => { const q = window.qrcode(0, 'M'); q.addData(`${base}/menu/?table=${i + 1}`); q.make(); return `<figure>${q.createSvgTag({ cellSize: 6, margin: 2, scalable: true })}<figcaption><strong>Table ${i + 1}</strong><br>Scan to order and pay<br>${esc(s.name)}</figcaption></figure>`; }).join('')}</div>`;
+        box.querySelector('#a-qr-print').onclick = () => window.print();
+      };
     },
   };
 
