@@ -48,17 +48,17 @@ function instantFor(ymd, minutes, tz) {
   return new Date(t);
 }
 
-/** Pickup times on 15-minute marks, today and the next two days, grouped by nothing: a flat list. */
-export function pickupSlots(restaurant, now = new Date(), days = 3) {
+/** Pickup times on 15-minute marks (or `step`), today and the next two days (or `days`): a flat list. */
+export function pickupSlots(restaurant, now = new Date(), days = 3, step = 15, limit = 200) {
   const tz = restaurant.timezone;
   const earliest = now.getTime() + restaurant.pickup_lead_minutes * 60000;
   const lastGap = restaurant.last_order_minutes_before_close ?? 0;
   const out = [];
-  for (let n = 0; n < days + 1 && out.length < 200; n++) {
+  for (let n = 0; n < days + 1 && out.length < limit; n++) {
     const z = zoned(new Date(now.getTime() + n * 86400000), tz);
     if (n === days) break;
     for (const [a, b] of windowsFor(restaurant, z.ymd, z.day)) {
-      for (let m = Math.ceil(toMin(a) / 15) * 15; m < toMin(b) - lastGap; m += 15) {
+      for (let m = Math.ceil(toMin(a) / step) * step; m < toMin(b) - lastGap; m += step) {
         const t = instantFor(z.ymd, m, tz);
         if (t.getTime() >= earliest) out.push(t.toISOString());
       }
@@ -68,8 +68,8 @@ export function pickupSlots(restaurant, now = new Date(), days = 3) {
 }
 
 /** Is this exact pickup time on offer? Guards against tampered requests. */
-export function validPickup(restaurant, iso, now = new Date()) {
-  return pickupSlots(restaurant, now).includes(new Date(iso).toISOString());
+export function validPickup(restaurant, iso, now = new Date(), days = 3, step = 15, limit = 200) {
+  return pickupSlots(restaurant, now, days, step, limit).includes(new Date(iso).toISOString());
 }
 
 export function indexMenu(menu) {
