@@ -151,3 +151,4 @@
 .ro-past li span { display: block; color: var(--ro-mute); font-size: .875rem; }
 .ro-acct #ro-out { margin-top: 1rem; }
 .ro-join { margin-top: 1rem; color: var(--ro-mute); }
+.ro-table { margin: 0; padding: .75rem 1rem; background: var(--ro-soft); border-radius: 8px; flex: 1 1 260px; }

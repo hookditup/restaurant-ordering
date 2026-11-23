@@ -43,3 +43,13 @@ button{min-height:44px;padding:0 1rem;border:0;border-radius:8px;background:#931
 details.a-box>summary{cursor:pointer;font-weight:700;min-height:32px}
 
 .a-box code { word-break: break-all; }
+
+/* table QR sheet */
+.a-qr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 1rem; margin-top: 1rem; }
+.a-qr-grid figure { margin: 0; text-align: center; border: 1px dashed #bbb; padding: .75rem; break-inside: avoid; }
+.a-qr-grid svg { width: 100%; height: auto; }
+@media print {
+  body * { visibility: hidden; }
+  #a-qr-sheet .a-qr-grid, #a-qr-sheet .a-qr-grid * { visibility: visible; }
+  #a-qr-sheet .a-qr-grid { position: absolute; left: 0; top: 0; width: 100%; grid-template-columns: repeat(3, 1fr); }
+}

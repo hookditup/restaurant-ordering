@@ -24,6 +24,8 @@
   }
 
   let menu, slots = [], pickupSlotsList = [], deliverySlots = [], deliveryMode = 'off', fulfillment = 'pickup', pickup = null, cart = store.get(), tip = 0, tipPct = 0, accepting = true;
+  // Table QR ordering (?table=12) and catering (order days ahead, with a minimum).
+  let tableLabel = null, catering = false, cateringSlots = [];
   const items = new Map();
 
   const post = (body) => fetch(API, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ restaurant: cfg.restaurant, ...body }) }).then((r) => r.json());
@@ -42,9 +44,13 @@
     const tz = menu.restaurant.timezone, d = new Date(iso);
     const day = (x) => x.toLocaleDateString('en-US', { timeZone: tz });
     const now = new Date(), tom = new Date(now.getTime() + 86400000);
-    const label = day(d) === day(now) ? 'Today' : day(d) === day(tom) ? 'Tomorrow' : d.toLocaleDateString('en-US', { timeZone: tz, weekday: 'long' });
+    const label = day(d) === day(now) ? 'Today' : day(d) === day(tom) ? 'Tomorrow' : d.toLocaleDateString('en-US', { timeZone: tz, weekday: 'long', ...(d - now > 6 * 86400000 ? { month: 'short', day: 'numeric' } : {}) });
     return `${label}, ${d.toLocaleTimeString('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' })}`;
   };
+  // Catering picks a date, then a time.
+  const dayKey = (iso) => new Date(iso).toLocaleDateString('en-CA', { timeZone: menu.restaurant.timezone });
+  const dayText = (d) => new Date(`${d}T12:00:00Z`).toLocaleDateString('en-US', { timeZone: 'UTC', weekday: 'long', month: 'short', day: 'numeric' });
+  const timeOnly = (iso) => new Date(iso).toLocaleTimeString('en-US', { timeZone: menu.restaurant.timezone, hour: 'numeric', minute: '2-digit' });
   // Lowest possible price, counting choices that must be made.
   const fromPrice = (i) => {
     let min = i.price_cents, more = false;
@@ -92,6 +98,14 @@
       ]);
       menu = m; pickupSlotsList = slots = s.slots || []; deliverySlots = s.delivery_slots || []; deliveryMode = s.delivery_mode || 'off';
       accepting = s.accepting !== false && slots.length > 0;
+      cateringSlots = s.catering_slots || [];
+      const qt = new URLSearchParams(location.search).get('table');
+      let t = qt; try { if (qt) sessionStorage.setItem(`ro-table-${cfg.restaurant}`, qt); else t = sessionStorage.getItem(`ro-table-${cfg.restaurant}`); } catch { /* fine */ }
+      if (t && menu.restaurant.dine_in_enabled) {
+        tableLabel = String(t).replace(/[<>]/g, '').slice(0, 12);
+        fulfillment = 'dine_in'; pickup = new Date().toISOString();
+        accepting = s.accepting !== false && s.open_now === true;
+      }
       pickup = slots[0] || null;
       for (const c of menu.categories) for (const i of c.items) items.set(i.id, { item: i, category: c });
       cart = cart.filter((l) => items.has(l.id));
@@ -143,13 +157,18 @@
     const test = menu.restaurant.test_mode ? '<p class="ro-test">Test mode. No real orders or charges.</p>' : '';
     const closed = accepting ? '' : `<p class="ro-closed">Online ordering isn't available right now. Please call ${esc(menu.restaurant.phone)}.</p>`;
     root.innerHTML = `${test}${closed}
+      ${tableLabel ? `<div class="ro-bar"><p class="ro-table">Ordering for <strong>table ${esc(tableLabel)}</strong>. We'll bring it to you. <button type="button" class="ro-link" id="ro-notable">Order for pickup instead</button></p>
+        <button type="button" class="ro-acctbtn" id="ro-acct">${acct ? `Hi, ${esc(acct.first_name || 'there')}` : 'Sign in'}</button></div>` : `
       <div class="ro-bar">
-        ${canDeliver() ? `<fieldset class="ro-mode"><legend>How would you like your order?</legend>${[['pickup', 'Pickup'], ['delivery', 'Delivery']].map(([v, t]) => `<label><input type="radio" name="ro-mode" value="${v}"${fulfillment === v ? ' checked' : ''}><span>${t}</span></label>`).join('')}</fieldset>` : ''}
+        ${modes().length > 1 ? `<fieldset class="ro-mode"><legend>How would you like your order?</legend>${modes().map(([v, t]) => `<label><input type="radio" name="ro-mode" value="${v}"${mode() === v ? ' checked' : ''}><span>${t}</span></label>`).join('')}</fieldset>` : ''}
         <button type="button" class="ro-acctbtn" id="ro-acct">${acct ? `Hi, ${esc(acct.first_name || 'there')}` : 'Sign in'}</button>
-        <label>${fulfillment === 'delivery' ? 'Delivery time' : 'Pickup time'}
+        ${catering ? `<label>Catering date<select id="ro-day">${[...new Set(slots.map(dayKey))].map((d) => `<option value="${d}"${d === dayKey(pickup) ? ' selected' : ''}>${esc(dayText(d))}</option>`).join('')}</select></label>
+        <label>Pickup time<select id="ro-time">${slots.filter((x) => dayKey(x) === dayKey(pickup)).map((s) => `<option value="${s}"${s === pickup ? ' selected' : ''}>${esc(timeOnly(s))}</option>`).join('')}</select></label>`
+        : `<label>${fulfillment === 'delivery' ? 'Delivery time' : 'Pickup time'}
           <select id="ro-time">${slots.map((s) => `<option value="${s}"${s === pickup ? ' selected' : ''}>${esc(slotText(s))}</option>`).join('')}</select>
-        </label>
+        </label>`}
       </div>
+      ${catering ? `<p class="ro-note">Catering orders start at ${money(menu.restaurant.catering_min_cents)} and need ${menu.restaurant.catering_lead_hours} hours' notice. Questions? Call ${esc(menu.restaurant.phone)}.</p>` : ''}`}
       ${deliveryMode === 'link' && menu.restaurant.doordash_store_url ? `<p class="ro-note"><a href="${esc(menu.restaurant.doordash_store_url)}" rel="noopener">Order delivery on DoorDash</a></p>` : ''}
       <nav class="ro-jump" aria-label="Menu categories">${pop.length ? '<a href="#ro-popular">Popular</a>' : ''}${cats.map((c) => `<a href="#${slug(c.name)}">${esc(c.name)}</a>`).join('')}</nav>
       ${pop.length ? `<section class="ro-cat" id="ro-popular"><h2>Popular</h2><div class="ro-items">${pop.map(card).join('')}</div></section>` : ''}
@@ -157,7 +176,9 @@
         ${c.note ? `<p class="ro-note">${esc(c.note)}</p>` : ''}${c.description ? `<p class="ro-note">${esc(c.description)}</p>` : ''}
         <div class="ro-items">${c.items.map(card).join('')}</div></section>`).join('')}
       <button class="ro-cartbtn" id="ro-open" type="button" hidden></button>`;
-    root.querySelector('#ro-time').addEventListener('change', (e) => { pickup = e.target.value; render(); });
+    root.querySelector('#ro-time')?.addEventListener('change', (e) => { pickup = e.target.value; render(); });
+    root.querySelector('#ro-day')?.addEventListener('change', (e) => { pickup = slots.find((x) => dayKey(x) === e.target.value) || pickup; render(); });
+    root.querySelector('#ro-notable')?.addEventListener('click', () => { tableLabel = null; try { sessionStorage.removeItem(`ro-table-${cfg.restaurant}`); } catch { /* fine */ } accepting = slots.length > 0; setMode('pickup'); });
     root.querySelectorAll('[name=ro-mode]').forEach((r) => r.addEventListener('change', () => setMode(r.value)));
     root.querySelector('#ro-open').addEventListener('click', openCart);
     root.querySelector('#ro-acct').addEventListener('click', () => openAccount());
@@ -168,9 +189,12 @@
 
   const slug = (n) => n.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   const canDeliver = () => ['drive', 'test'].includes(deliveryMode) && deliverySlots.length > 0;
-  function setMode(mode) {
-    fulfillment = mode;
-    slots = mode === 'delivery' ? deliverySlots : pickupSlotsList;
+  const modes = () => [['pickup', 'Pickup'], ...(canDeliver() ? [['delivery', 'Delivery']] : []), ...(cateringSlots.length ? [['catering', 'Catering']] : [])];
+  const mode = () => (catering ? 'catering' : fulfillment);
+  function setMode(m) {
+    catering = m === 'catering';
+    fulfillment = catering ? 'pickup' : m;
+    slots = catering ? cateringSlots : m === 'delivery' ? deliverySlots : pickupSlotsList;
     const at = new Date(pickup).getTime();
     pickup = slots.find((s) => new Date(s).getTime() >= at) || slots[0] || null;
     render();
@@ -462,7 +486,7 @@
           <button type="button" data-edit="${n}">Edit</button><button type="button" data-del="${n}">Remove</button></div><b>${money(linePrice(item, new Set(l.options)) * l.qty)}</b></li>`;
       }).join('')}</ul>
       ${extras.length ? `<section class="ro-pairs"><h3>Add to your order</h3>${extras.map(pairButton).join('')}</section>` : ''}
-      <p class="ro-when">${fulfillment === 'delivery' ? 'Delivery' : 'Pickup'}: <strong>${esc(slotText(pickup))}</strong></p>
+      <p class="ro-when">${tableLabel ? `Table <strong>${esc(tableLabel)}</strong> · we'll bring it out when it's ready` : `${catering ? 'Catering pickup' : fulfillment === 'delivery' ? 'Delivery' : 'Pickup'}: <strong>${esc(slotText(pickup))}</strong>`}</p>
       <form id="ro-pay" novalidate>
         ${acct ? `<p class="ro-signed">Signed in as ${esc([acct.first_name, acct.last_name].filter(Boolean).join(' ') || acct.phone || acct.email)}. <button type="button" class="ro-link" id="ro-acct2">Your account</button></p>`
           : '<p class="ro-signed"><button type="button" class="ro-link" id="ro-acct2">Sign in</button> for faster checkout and your past orders.</p>'}
@@ -548,7 +572,7 @@
     const consent = { sms_updates: f.elements.sms_updates.checked, sms_marketing: f.elements.sms_marketing.checked, email_marketing: f.elements.email_marketing.checked };
     try { if (f.elements.remember.checked) localStorage.setItem(GUEST, JSON.stringify({ first_name: val('first_name'), last_name: val('last_name'), phone: val('phone'), email: val('email') })); else localStorage.removeItem(GUEST); } catch { /* not saved on this device */ }
     for (const k of ['sms_updates', 'sms_marketing', 'email_marketing', 'remember', 'promo_code']) delete guest[k];
-    const r = await post({ action: 'checkout', pickup_at: pickup, tip_cents: tip, items: cart, guest, gift_code, rewards_code, promo_code, consent, fulfillment, address: fulfillment === 'delivery' ? addressFrom(val) : undefined, session: acctToken || undefined, return_url: location.origin, attribution: window.HRA ? window.HRA.get() : undefined }).catch(() => null);
+    const r = await post({ action: 'checkout', pickup_at: pickup, tip_cents: tip, items: cart, guest, gift_code, rewards_code, promo_code, consent, fulfillment, table: tableLabel || undefined, catering: catering || undefined, address: fulfillment === 'delivery' ? addressFrom(val) : undefined, session: acctToken || undefined, return_url: location.origin, attribution: window.HRA ? window.HRA.get() : undefined }).catch(() => null);
     if (!r?.ok) { err.textContent = r?.error || 'Something went wrong. Please try again or call us.'; btn.disabled = false; return; }
     cart = []; store.set(cart);
     if (r.test) location.href = `/order/?t=${r.token}`; else leave(r, `/order/?t=${r.token}`);
