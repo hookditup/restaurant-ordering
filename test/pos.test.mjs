@@ -204,3 +204,11 @@ test('Toast: catalog for menu sync reads sold-out from the stock API', async () 
   assert.deepEqual(c.items.map((i) => [i.name, i.available]), [['Street Tacos', true], ['Horchata', false]]);
   assert.deepEqual(c.options.map((o) => o.name), ['Carne Asada', 'Pastor']);
 });
+
+test('phone orders print as unpaid', async () => {
+  const { ticketText: tt } = await import('../supabase/functions/pos/adapters.js');
+  const t = tt({ restaurant: { name: 'R', timezone: 'America/Denver' }, channel: 'phone', payment_status: 'unpaid', order_no: '9', fulfillment: 'pickup', pickup_at: '2026-11-04T19:00:00Z', first_name: 'A', last_name: 'B', phone: '', items: [{ qty: 1, name: 'Taco', options: [] }], subtotal_cents: 100, tax_cents: 9, total_cents: 109 });
+  assert.match(t, /PHONE ORDER #9/);
+  assert.match(t, /DUE AT PICKUP/);
+  assert.doesNotMatch(t, /PAID ONLINE/);
+});

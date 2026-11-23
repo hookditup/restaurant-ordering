@@ -10,6 +10,8 @@
 //   rewards_info, rewards_check, gift_buy, gift_view, gift_check   guest
 //   staff      staff: reservations, messages, rewards and gift cards
 //   acct_start, acct_verify, acct_me, acct_update, acct_signout   guest accounts (phone or email + 6-digit code)
+//   driver_view, driver_done   the restaurant's own driver, by private link
+//   /ordering/phone/<menu|quote|place>   AI phone agent (HighLevel Voice AI), Bearer <restaurant phone key>
 //   ?hook=stripe  Stripe webhook
 //   /ordering/pay/<authorizenet|clover|square>/<restaurant id>   that restaurant's processor webhook (payments.js)
 // Secrets: STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, RESEND_API_KEY, EMAIL_FROM,
@@ -17,7 +19,7 @@
 //   ATTRIBUTION_URL + ATTRIBUTION_KEYS (marketing attribution; JSON map of restaurant slug -> API key).
 // With no Stripe key, a restaurant in test mode marks orders as test-paid. Live mode never does.
 import { PayError, PROCESSORS } from './payments.js';
-import { addressLine, applyGift, cleanAddress, cleanCode, cleanGuest, isOpenAt, makeCode, NEXT, normPhone, OrderError, pickupSlots, priceCart, promoDiscount, totals, validPickup, windowsFor } from './core.js';
+import { addressLine, applyGift, CHANNELS, cleanAddress, cleanCode, cleanGuest, isOpenAt, makeCode, NEXT, normPhone, OrderError, parseSpoken, pickSlot, pickupSlots, priceCart, promoDiscount, sourceOf, tagLinks, totals, validPickup, windowsFor } from './core.js';
 
 const SB_URL = Deno.env.get('SUPABASE_URL')!;
 const SB_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -76,6 +78,15 @@ function cleanAttribution(raw: any, req: Request) {
     userAgent: s(req.headers.get('user-agent'), 500),
   };
 }
+
+/** Channel, source and campaign columns for a row, from what track.js sent. */
+const srcCols = (attr: any, override?: { channel: string; source?: string | null; campaign?: string | null }) => {
+  const x = override ?? sourceOf(attr);
+  return { channel: x.channel, source: x.source ?? null, campaign: x.campaign ?? null };
+};
+/** Remember how a guest first found the restaurant (set once). */
+const firstChannel = (cid: string | null, cols: { channel: string; source: string | null }) =>
+  cid ? patch('customers', `id=eq.${cid}&first_channel=is.null`, { first_channel: cols.channel, first_source: cols.source }).catch(() => null) : null;
 
 // Read on every call so new secrets apply without a redeploy. ATTRIBUTION_KEYS is normally JSON
 // ({"slug":"hra_..."}); a bare hra_ key is accepted for all restaurants. Stray characters from
@@ -298,6 +309,7 @@ async function paymentSweep() {
 // ---------- owner's weekly report ----------
 const pct = (now: number, before: number) => (before ? ` (${now >= before ? '+' : ''}${Math.round((now - before) / before * 100)}% vs the week before)` : '');
 const KIND_NAMES: Record<string, string> = { campaign: 'campaigns', winback: 'we-miss-you', birthday: 'birthday', points: 'reward reminders', cart: 'left-in-cart', review: 'review requests', welcome: 'welcome' };
+const channelName = (k: string) => (CHANNELS as Record<string, string>)[k] ?? (k === 'unknown' ? 'Not tracked' : k);
 function reportText(name: string, from: Date, to: Date, tz: string, x: any) {
   const d = (t: Date) => t.toLocaleDateString('en-US', { timeZone: tz, month: 'short', day: 'numeric' });
   const types = Object.entries(x.by_type).map(([k, n]) => `${n} ${k === 'dine_in' ? 'at the table' : k}`).join(', ');
@@ -308,6 +320,7 @@ function reportText(name: string, from: Date, to: Date, tz: string, x: any) {
     `Average order: ${money(x.avg_cents)} · Tips for your team: ${money(x.tips_cents)}`,
     `Guests: ${x.new_guests} new, ${x.returning_guests} returning`,
     x.top_items.length ? `Top dishes: ${x.top_items.map((i: any) => `${i.name} (${i.qty})`).join(', ')}` : '',
+    (x.by_channel ?? []).length ? `Where orders came from: ${x.by_channel.map((c: any) => `${channelName(c.channel)} ${c.orders} (${money(c.sales_cents)})`).join(', ')}` : '',
     '', `Marketing brought back ${x.marketing_orders} order${x.marketing_orders === 1 ? '' : 's'} worth ${money(x.marketing_sales_cents)}${mk ? ` (${mk})` : ''}.`,
     `Messages sent: ${x.messages_sent} · Review requests: ${x.reviews_asked}`,
     `New: ${x.new_accounts} guest accounts, ${x.new_rewards} rewards members, ${x.reservations} reservations`,
@@ -356,18 +369,26 @@ async function doordash(path: string, method: string, body?: unknown) {
   return data;
 }
 const deliveryMode = (r: any) => {
+  if (r.delivery_enabled && r.own_delivery && (r.own_delivery_zips ?? []).length) return 'own';
   if (r.delivery_enabled && DD_DEV && DD_KEY && DD_SECRET) return 'drive';
   if (r.delivery_enabled && r.test_mode) return 'test';
   return r.doordash_store_url ? 'link' : 'off';
 };
 const toE164 = (p: string) => (normPhone(p) || p);
 
-async function deliveryFee(r: any, address: any, phone: string, valueCents: number) {
-  const mode = deliveryMode(r);
+/** Delivery fee and who delivers: the restaurant's own drivers (by ZIP), DoorDash Drive, or test mode. */
+async function deliveryFee(r: any, address: any, phone: string, valueCents: number): Promise<{ cents: number; by: string }> {
+  let mode = deliveryMode(r);
+  if (mode === 'own') {
+    const z = (r.own_delivery_zips ?? []).find((x: any) => x.zip === address.zip);
+    if (z) return { cents: z.fee_cents, by: 'own' };
+    mode = r.delivery_enabled && DD_DEV && DD_KEY && DD_SECRET ? 'drive' : 'none';
+    if (mode === 'none') throw new OrderError(`We deliver to ZIP code${r.own_delivery_zips.length > 1 ? 's' : ''} ${r.own_delivery_zips.map((x: any) => x.zip).join(', ')}. Pickup is available.`);
+  }
   if (mode === 'test') {
     if (!address.zip.startsWith('84')) throw new OrderError("We can't deliver to that address. Pickup is available.");
     const [s] = await db(`restaurants?select=delivery_test_fee_cents&id=eq.${r.id}`);
-    return s.delivery_test_fee_cents;
+    return { cents: s.delivery_test_fee_cents, by: 'test' };
   }
   if (mode !== 'drive') throw new OrderError('Delivery is not available right now.');
   try {
@@ -375,7 +396,7 @@ async function deliveryFee(r: any, address: any, phone: string, valueCents: numb
       external_delivery_id: `quote-${crypto.randomUUID()}`, pickup_address: r.address, pickup_business_name: r.name, pickup_phone_number: toE164(r.phone),
       dropoff_address: addressLine(address), dropoff_phone_number: phone, order_value: valueCents,
     });
-    return Math.round(Number(q.fee) || 0);
+    return { cents: Math.round(Number(q.fee) || 0), by: 'drive' };
   } catch (e) {
     console.error(e instanceof Error ? e.message : e);
     throw new OrderError("We can't deliver to that address. Pickup is available.");
@@ -384,6 +405,7 @@ async function deliveryFee(r: any, address: any, phone: string, valueCents: numb
 
 // The kitchen's Accept sends the driver. A failed request leaves a warning, not a stuck order.
 async function dispatchDelivery(o: any) {
+  if (o.delivery_status === 'own') return {}; // the restaurant's own driver; sent from the kitchen screen
   const [r] = await db(`restaurants?select=id,name,phone,address,test_mode,delivery_enabled,doordash_store_url&id=eq.${o.restaurant_id}`);
   if (deliveryMode(r) !== 'drive') return { delivery_id: `test-${o.order_no}`, delivery_status: 'test' };
   try {
@@ -503,9 +525,17 @@ async function resendSend(cfg: MsgCfg, to: string, subject: string, textBody: st
   return d.id as string;
 }
 
+/** What links in a message are tagged with: the campaign's name, or the automation (winback, cart…). */
+async function campaignFor(m: any) {
+  if (!m.campaign_id) return m.kind as string;
+  const [c] = await db(`msg_campaigns?select=name&id=eq.${m.campaign_id}`).catch(() => []);
+  return String(c?.name ?? 'campaign').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || 'campaign';
+}
+
 /** Send one queued message now. Consent is checked again at send time. */
 async function deliver(m: any, cache: Map<string, MsgCfg>): Promise<{ status: string; error?: string }> {
   const cfg = await msgConfig(m.restaurant_id, cache);
+  m = { ...m, body: tagLinks(m.body, cfg.r.site_url, m.channel, await campaignFor(m)) };
   const c = m.customer_id ? (await db(`customers?select=sms_marketing,sms_updates,sms_stopped_at,email_marketing,unsub_token&id=eq.${m.customer_id}`))[0] : null;
   const finish = async (status: string, extra: Record<string, unknown> = {}) => {
     await patch('messages', `id=eq.${m.id}`, { status, ...extra, ...(status === 'sent' ? { sent_at: new Date().toISOString() } : {}) });
@@ -701,20 +731,23 @@ async function checkout(req: Request, body: any) {
   const lines = priceCart(menu, body.items, pickup_at);
   if (catering && lines.reduce((n, l) => n + l.line_total_cents, 0) < r.catering_min_cents) throw new OrderError(`Catering orders start at ${money(r.catering_min_cents)}.`);
   const address = delivering ? cleanAddress(body.address) : null;
-  const fee = address ? await feeFor(r, address, guest.phone, lines) : 0;
-  const c = await priceWithCredits(r.id, lines, r, body.tip_cents, guest.phone, body.rewards_code, body.gift_code, fee, body.promo_code);
+  const fee = address ? await feeFor(r, address, guest.phone, lines) : { cents: 0, by: null };
+  const c = await priceWithCredits(r.id, lines, r, body.tip_cents, guest.phone, body.rewards_code, body.gift_code, fee.cents, body.promo_code);
   const { t } = c;
 
   const [full] = await db(`restaurants?select=stripe_account_id,site_url&id=eq.${r.id}`);
+  const attribution = cleanAttribution(body.attribution, req);
+  const src = srcCols(attribution, dineIn ? { channel: 'table_qr', source: 'table', campaign: table } : undefined);
   const [o] = await insert('orders', {
     restaurant_id: r.id, pickup_at: new Date(pickup_at).toISOString(), ...guest, ...t, gift_applied_cents: c.gift_applied_cents,
     amount_due_cents: c.amount_due_cents, test_mode: r.test_mode, fulfillment: dineIn ? 'dine_in' : delivering ? 'delivery' : 'pickup', delivery_address: address,
-    table_label: dineIn ? table : null, catering,
-    attribution: cleanAttribution(body.attribution, req),
+    table_label: dineIn ? table : null, catering, ...src, delivery_status: fee.by === 'own' ? 'own' : null,
+    attribution,
     promo_code_id: c.promo?.id ?? null, promo_cents: c.promo_cents, sms_updates: body.consent?.sms_updates === true,
   });
   await insert('order_items', lines.map((l) => ({ ...l, order_id: o.id })));
   await log(o.id, 'guest', 'placed', { ip });
+  await firstChannel(o.customer_id, src);
   await saveConsent(r.id, { phone: guest.phone, email: guest.email, first_name: guest.first_name, last_name: guest.last_name }, body.consent);
   if (address && body.session) {
     const cid = await guestFrom(r.id, body.session).catch(() => null);
@@ -904,6 +937,7 @@ async function acctVerify(req: Request, body: any) {
   const cid = await rpc('upsert_customer', { rid: r.id, p: kind === 'sms' ? { phone: login, source: 'account' } : { email: login, source: 'account' } });
   if (!cid) throw new Error('could not find or create the customer');
   const fresh = await patch('customers', `id=eq.${cid}&account_at=is.null`, { account_at: new Date().toISOString() });
+  await firstChannel(cid, srcCols(cleanAttribution(body.attribution, req)));
   const token = hex(crypto.getRandomValues(new Uint8Array(32)).buffer);
   await insert('guest_sessions', { token_hash: await sha256(token), restaurant_id: r.id, customer_id: cid, expires_at: new Date(Date.now() + 180 * 86400000).toISOString() });
   await log(null, 'account', fresh?.length ? 'created' : 'signed_in', { customer: cid, by: kind });
@@ -967,7 +1001,7 @@ async function rememberAddress(cid: string, address: any) {
 }
 
 // ---------- website forms ----------
-async function rewardsJoin(r: any, d: Record<string, string>) {
+async function rewardsJoin(r: any, d: Record<string, string>, attribution: any = null) {
   const phone = normPhone(d.phone), name = text(d.name, 80), email = text(d.email, 120).toLowerCase();
   if (!name) throw new OrderError('Please enter your name.');
   if (!phone) throw new OrderError('Please enter a 10-digit phone number.');
@@ -978,7 +1012,9 @@ async function rewardsJoin(r: any, d: Record<string, string>) {
     return json({ ok: true, existing: true });
   }
   const code = makeCode(8);
-  const [a] = await insert('rewards_accounts', { restaurant_id: r.id, phone, name, email: email || null, code, sms_consent: d.sms_consent === 'yes' });
+  const src = srcCols(attribution);
+  const [a] = await insert('rewards_accounts', { restaurant_id: r.id, phone, name, email: email || null, code, sms_consent: d.sms_consent === 'yes', ...src });
+  await firstChannel(a.customer_id ?? null, src);
   const bm = Math.floor(Number(d.birth_month)), bd = Math.floor(Number(d.birth_day));
   if (bm >= 1 && bm <= 12 && bd >= 1 && bd <= 31) await rpc('upsert_customer', { rid: r.id, p: { phone, birth_month: bm, birth_day: bd } }).catch(() => null);
   if (d.sms_consent === 'yes') await automationSms(r.id, a.customer_id, phone, 'welcome', { code }, `welcome:${a.id}`, true);
@@ -999,7 +1035,7 @@ async function submitForm(req: Request, body: any) {
   let res: Response | null = null;
   const attribution = cleanAttribution(body.attribution, req);
   if (kind === 'rewards') {
-    res = await rewardsJoin(r, data);
+    res = await rewardsJoin(r, data, attribution);
     const phone = normPhone(data.phone);
     if (phone) await reportConversion(String(body.restaurant), {
       type: 'vip_signup', externalId: `rewards-${phone}`, valueCents: 0, customer: { phone, email: data.email || undefined },
@@ -1007,7 +1043,7 @@ async function submitForm(req: Request, body: any) {
   } else if (kind === 'reservation') {
     res = await bookTable(r, data, String(body.restaurant), attribution);
   }
-  if (kind !== 'reservation' && kind !== 'rewards') await insert('form_submissions', { restaurant_id: r.id, kind, data });
+  if (kind !== 'reservation' && kind !== 'rewards') await insert('form_submissions', { restaurant_id: r.id, kind, data, attribution, ...srcCols(attribution) });
   const lines = Object.entries(data).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`).join('\n');
   await sendEmail(r.forms_email, `${r.name}: new ${kind.replace(/-/g, ' ')} form`, `${lines}\n\nSent from ${text(body.page, 100) || 'the website'}.`, null, validEmail(data.email ?? '') ? data.email : undefined);
   return res ?? json({ ok: true });
@@ -1027,7 +1063,7 @@ async function bookTable(r: any, data: Record<string, string>, slug: string, att
   if (!Number.isInteger(start_min) || start_min < 0 || start_min > 1439) throw new OrderError('Please pick a time.');
   const b = await rpc('res_book', { rid: r.id, p: { name, email, phone, date: data.date, start_min, guests, requests: text(data.requests, 500) } });
   if (!b.ok) throw new OrderError(b.error);
-  if (attribution) await patch('reservations', `id=eq.${b.id}`, { attribution });
+  await patch('reservations', `id=eq.${b.id}`, { attribution, ...srcCols(attribution) });
   await reportConversion(slug, {
     type: 'reservation', externalId: b.id, reservationId: b.id, valueCents: 0, customer: { phone, email },
     extra: { res_date: data.date, res_time: b.label, party_size: String(guests) },
@@ -1119,7 +1155,7 @@ async function staffTools(req: Request, body: any) {
   const SECTION: Record<string, string> = {
     reservations: 'reservations', reservation: 'reservations', messages: 'messages', message: 'messages',
     rewards_find: 'rewards', rewards_adjust: 'rewards', gift_find: 'gift', gift_redeem: 'gift', gift_issue: 'gift',
-    refund: 'orders', pay_test: 'settings', report_send: 'dashboard', res_status: 'reservations', msg_settings: 'settings', msg_test: 'campaigns', campaign_send: 'campaigns', message_customer: 'customers',
+    refund: 'orders', pay_test: 'settings', phone_key: 'settings', report_send: 'dashboard', res_status: 'reservations', msg_settings: 'settings', msg_test: 'campaigns', campaign_send: 'campaigns', message_customer: 'customers',
     team_list: 'team', team_save: 'team', team_remove: 'team',
     mkt_report: 'marketing', mkt_campaigns: 'marketing', mkt_link: 'marketing', mkt_spend: 'marketing',
   };
@@ -1154,6 +1190,12 @@ async function staffTools(req: Request, body: any) {
       return json({ ok: true, status: to });
     }
     case 'refund': return await refundOrder(r, me, body);
+    case 'phone_key': {
+      const key = `rok_${hex(crypto.getRandomValues(new Uint8Array(24)).buffer)}`;
+      await patch('restaurants', `id=eq.${r.id}`, { phone_key_hash: await sha256(key) });
+      await log(null, 'phone', 'key_created', { restaurant: r.id, by: me.email });
+      return json({ ok: true, key, base: `${SB_URL}/functions/v1/ordering/phone` });
+    }
     case 'report_send': {
       const [x] = await db(`restaurants?select=id,name,timezone&id=eq.${r.id}`);
       if (!RESEND || !FROM) throw new OrderError('Email is not connected yet, so the report cannot be sent.');
@@ -1335,12 +1377,133 @@ async function marketing(r: any, op: string, body: any) {
   return json({ ok: false, error: 'Unknown action.' }, 400);
 }
 
+// ---------- the restaurant's own drivers ----------
+/** Kitchen: hand a delivery to one of the restaurant's drivers. The driver gets a link to the address and a Delivered button. */
+async function sendDriver(o: any, staff: any, body: any) {
+  if (o.fulfillment !== 'delivery' || !['own', 'out'].includes(o.delivery_status)) return json({ ok: false, error: 'This order is not for your own drivers.' });
+  if (!['accepted', 'ready'].includes(o.status)) return json({ ok: false, error: o.status === 'new' ? 'Accept the order first.' : `This order is already ${o.status}.` });
+  const [r] = await db(`restaurants?select=id,name,site_url,timezone,drivers&id=eq.${o.restaurant_id}`);
+  const d = (r.drivers ?? [])[Math.floor(Number(body.driver))];
+  if (!d) return json({ ok: false, error: 'Pick a driver. Add drivers in Settings.' });
+  const token = hex(crypto.getRandomValues(new Uint8Array(24)).buffer);
+  const now = new Date().toISOString();
+  const rows = await patch('orders', `id=eq.${o.id}&status=eq.${o.status}`, { delivery_status: 'out', driver_name: d.name, driver_phone: d.phone, driver_token: token, out_at: now, status: 'ready', ready_at: o.ready_at ?? now });
+  if (!rows?.length) return json({ ok: false, error: 'Someone else just updated this order.' });
+  await log(o.id, 'kitchen', 'out_for_delivery', { by: staff.name, driver: d.name });
+  const link = `${r.site_url}/driver/?t=${token}`;
+  const cache = new Map<string, MsgCfg>();
+  const sms = async (to: string, kind: string, text: string, customer: string | null) => {
+    const [m] = await insert('messages', { restaurant_id: r.id, customer_id: customer, channel: 'sms', kind, to_addr: to, body: text, marketing: false });
+    return (await deliver(m, cache)).status === 'sent';
+  };
+  const texted = await sms(d.phone, 'staff', `${r.name} delivery #${o.order_no} for ${o.first_name}: ${addressLine(o.delivery_address)}. Directions and Delivered button: ${link}`, null).catch(() => false);
+  if (o.sms_updates) await sms(o.phone, 'order_ready', `${r.name}: your order #${o.order_no} is on its way with ${d.name}.`, o.customer_id).catch(() => null);
+  await sendEmail(o.email, `Your ${r.name} order is on its way`, `Hi ${o.first_name}, order ${o.order_no} just left with ${d.name}. Track it: ${r.site_url}/order/?t=${o.token}`, o.id);
+  return json({ ok: true, status: 'ready', driver_link: link, texted });
+}
+
+/** Driver page: the delivery behind a driver link. */
+async function driverView(body: any, done: boolean) {
+  const t = String(body.token ?? '').replace(/[^a-f0-9]/g, '');
+  if (t.length !== 48) return json({ ok: false, error: 'This link has expired.' }, 404);
+  const [o] = await db(`orders?select=*,items:order_items(name,qty)&driver_token=eq.${t}`);
+  if (!o || !['ready', 'completed'].includes(o.status)) return json({ ok: false, error: 'This delivery is no longer active.' }, 404);
+  if (done && o.status === 'ready') {
+    const rows = await patch('orders', `id=eq.${o.id}&status=eq.ready`, { status: 'completed', completed_at: new Date().toISOString(), delivery_status: 'delivered' });
+    if (rows?.length) {
+      await log(o.id, 'driver', 'delivered', { driver: o.driver_name });
+      await log(o.id, 'rewards', 'earned', { points: await rpc('order_earn_points', { p_order: o.id }) });
+      o.status = 'completed';
+    }
+  }
+  const [r] = await db(`restaurants?select=name,phone&id=eq.${o.restaurant_id}`);
+  return json({ ok: true, delivery: {
+    order_no: o.order_no, status: o.status, name: `${o.first_name} ${o.last_name}`.trim(), phone: o.phone, address: o.delivery_address, line: addressLine(o.delivery_address),
+    items: o.items.reduce((n: number, i: any) => n + i.qty, 0), total_cents: o.total_cents, paid: o.payment_status !== 'unpaid', driver: o.driver_name, restaurant: r.name, restaurant_phone: r.phone,
+  } });
+}
+
+// ---------- AI phone ordering (HighLevel Voice AI custom actions) ----------
+// POST /functions/v1/ordering/phone/<menu|quote|place>, header Authorization: Bearer <the restaurant's phone key>.
+// The agent reads `say` (or `ask`) back to the caller. Phone orders are paid at pickup.
+const phoneArgs = (b: any) => ({ ...(b?.parameters ?? b?.args ?? b?.data ?? {}), ...b });
+async function phoneRestaurant(req: Request) {
+  const key = (req.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '').trim();
+  if (!/^rok_[a-f0-9]{48}$/.test(key)) return null;
+  const [r] = await db(`restaurants?select=slug&phone_key_hash=eq.${await sha256(key)}&phone_enabled=eq.true&active=eq.true`);
+  return r ? await menuFor(r.slug) : null;
+}
+/** "today at 6:30 PM", "tomorrow at noon"-style times for the agent to read out. */
+const clock = (iso: string, tz: string) => {
+  const day = (d: Date) => new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(d);
+  const t = new Date(iso), time = t.toLocaleString('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' });
+  if (day(t) === day(new Date())) return `today at ${time}`;
+  if (day(t) === day(new Date(Date.now() + 86400000))) return `tomorrow at ${time}`;
+  return t.toLocaleString('en-US', { timeZone: tz, weekday: 'long', hour: 'numeric', minute: '2-digit' }).replace(/, | /, ' at ');
+};
+function menuText(menu: any) {
+  const opts = (groups: any[]): string => groups.map((g: any) => `${g.name} (${g.min ? `pick ${g.min === g.max ? g.min : `${g.min}+`}` : 'optional'}): ${g.options.map((o: any) => `${o.name}${o.price_cents ? ` +${money(o.price_cents)}` : ''}${o.groups?.length ? ` [${opts(o.groups)}]` : ''}`).join(', ')}`).join('; ');
+  return menu.categories.map((c: any) => `${c.name}${c.hours ? ' (limited hours)' : ''}: ${c.items.map((i: any) => `${i.name} ${money(i.price_cents)}${i.groups?.length ? ` [${opts(i.groups)}]` : ''}`).join(' | ')}`).join('\n').slice(0, 15000);
+}
+async function phone(req: Request, action: string) {
+  const ip = ipOf(req);
+  if (!(await rpc('rate_limit', { p_key: `phone:${ip}`, p_max: 120, p_seconds: 600 }))) return json({ ok: false, say: 'Our system is busy. Please hold for a team member.' }, 429);
+  const menu = await phoneRestaurant(req);
+  if (!menu) return json({ ok: false, error: 'Phone ordering is not connected. Check the key.' }, 401);
+  const r = menu.restaurant, a = phoneArgs(await req.json().catch(() => ({})));
+  const slots = pickupSlots(r);
+  if (action === 'menu') {
+    return json({ ok: true, restaurant: r.name, taking_orders: !!r.accepting_orders && slots.length > 0, open_now: isOpenAt(r.hours, new Date(), r.timezone, r.exceptions),
+      next_pickup: slots[0] ? clock(slots[0], r.timezone) : null, menu: menuText(menu),
+      how_to_order: 'Collect the dishes with quantity and choices, then call quote with items like "2 steak tacos no onion; 1 large horchata" and the pickup time ("asap" or "6:30 pm"). Read back the quote. If the caller agrees, call place with the quote_id and their first name, last name and phone. Orders are paid at pickup.' });
+  }
+  if (!r.accepting_orders || !slots.length) return json({ ok: false, say: "We aren't taking phone orders right now. Please hold for a team member." });
+  if (action === 'quote') {
+    const slot = pickSlot(slots, a.pickup_time, r.timezone);
+    if (!slot) return json({ ok: false, ask: `We can't do that time. The next pickup time is ${clock(slots[0], r.timezone)}. Ask the caller for another time.` });
+    const parsed = parseSpoken(menu, a.items, new Date(slot));
+    if (parsed.ask.length) return json({ ok: false, ask: parsed.ask.join(' ') });
+    const lines = priceCart(menu, parsed.lines, slot);
+    const t = totals(lines, r);
+    const readback = `${lines.map((l) => `${l.qty} ${l.name}${l.options.length ? ` (${l.options.map((x: any) => x.name).join(', ')})` : ''}${l.note ? `, ${l.note}` : ''}`).join('; ')}. Total ${money(t.total_cents)} with tax, paid at pickup. Ready ${clock(slot, r.timezone)}.`;
+    const [q] = await insert('phone_quotes', { restaurant_id: r.id, items: parsed.lines, pickup_at: slot, total_cents: t.total_cents, readback });
+    return json({ ok: true, quote_id: q.id, say: readback, total: money(t.total_cents), pickup_time: clock(slot, r.timezone) });
+  }
+  if (action === 'place') {
+    const qid = String(a.quote_id ?? '');
+    if (!/^[0-9a-f-]{36}$/.test(qid)) return json({ ok: false, ask: 'Get a quote first, then place it with the quote_id.' });
+    const phoneNo = normPhone(a.phone);
+    const first = text(a.first_name, 40), last = text(a.last_name, 40);
+    if (!first) return json({ ok: false, ask: "Ask for the caller's first name." });
+    if (!phoneNo) return json({ ok: false, ask: 'Ask for a 10-digit callback number.' });
+    const [q] = await patch('phone_quotes', `id=eq.${qid}&restaurant_id=eq.${r.id}&used_at=is.null&created_at=gt.${new Date(Date.now() - 20 * 60000).toISOString()}`, { used_at: new Date().toISOString() });
+    if (!q) return json({ ok: false, ask: 'That quote expired or was already placed. Get a new quote.' });
+    const pickup_at = validPickup(r, q.pickup_at) ? q.pickup_at : slots[0];
+    const lines = priceCart(menu, q.items, pickup_at);
+    const t = totals(lines, r);
+    const [o] = await insert('orders', {
+      restaurant_id: r.id, pickup_at, first_name: first, last_name: last, phone: phoneNo, email: null,
+      note: ['PHONE ORDER · PAY AT PICKUP', text(a.notes, 200)].filter(Boolean).join(' · '), ...t, gift_applied_cents: 0, amount_due_cents: t.total_cents,
+      test_mode: r.test_mode, fulfillment: 'pickup', channel: 'phone', source: 'ai_voice', campaign: null, payment_status: 'unpaid', sms_updates: a.text_updates === true || /^y/i.test(String(a.text_updates ?? '')),
+    });
+    await insert('order_items', lines.map((l) => ({ ...l, order_id: o.id })));
+    await patch('orders', `id=eq.${o.id}`, { status: 'new' }); // sends it to the POS / printer
+    await log(o.id, 'phone', 'placed', { quote: q.id });
+    await firstChannel(o.customer_id, { channel: 'phone', source: 'ai_voice' });
+    const [x] = await db(`restaurants?select=alert_email,timezone&id=eq.${r.id}`);
+    await sendEmail(x.alert_email, `New phone order ${o.order_no}`, `${first} ${last} (${phoneNo}), pickup ${timeText(pickup_at, r.timezone)}, ${money(t.total_cents)} due at pickup.`, o.id);
+    return json({ ok: true, order_no: o.order_no, say: `You're all set, ${first}. Order number ${o.order_no} will be ready ${clock(pickup_at, r.timezone)}. The total is ${money(t.total_cents)}, and you'll pay when you pick it up.` });
+  }
+  return json({ ok: false, error: 'Unknown action.' }, 400);
+}
+
 async function kitchen(req: Request, body: any) {
   const [o] = await db(`orders?select=*&id=eq.${encodeURIComponent(String(body.order_id ?? ''))}`);
   if (!o) return json({ ok: false, error: 'Order not found.' }, 404);
   const staff = await staffFor(req, o.restaurant_id);
   if (!staff) return json({ ok: false, error: 'Please sign in again.' }, 401);
   if (!staff.perms.includes('kitchen')) return json({ ok: false, error: "Your login doesn't have kitchen access." }, 403);
+  if (body.move === 'out') return await sendDriver(o, staff, body);
   const to = { accept: 'accepted', ready: 'ready', complete: 'completed', cancel: 'cancelled' }[String(body.move)];
   if (!to || !(NEXT as any)[o.status]?.includes(to)) return json({ ok: false, error: `This order is already ${o.status}.` });
   const now = new Date().toISOString();
@@ -1400,6 +1563,8 @@ Deno.serve(async (req) => {
     const url = new URL(req.url), qs = url.searchParams;
     const payHook = url.pathname.match(/\/pay\/(authorizenet|clover|square)\/([0-9a-f-]{36})\/?$/);
     if (payHook) return await handlePayHook(req, payHook[1], payHook[2]);
+    const phoneCall = url.pathname.match(/\/phone\/(menu|quote|place)\/?$/);
+    if (phoneCall) return await phone(req, phoneCall[1]);
     if (qs.get('hook') === 'stripe') return await handleStripeHook(req);
     if (qs.get('hook') === 'twilio') return await handleTwilio(req, qs.get('r') ?? '');
     if (qs.get('unsub')) {
@@ -1416,7 +1581,7 @@ Deno.serve(async (req) => {
       case 'slots': {
         const { restaurant } = await menuFor(body.restaurant);
         const delivery_mode = deliveryMode(restaurant);
-        return json({ ok: true, accepting: restaurant.accepting_orders, slots: pickupSlots(restaurant), delivery_mode, delivery_slots: ['drive', 'test'].includes(delivery_mode) ? pickupSlots(forDelivery(restaurant)) : [],
+        return json({ ok: true, accepting: restaurant.accepting_orders, slots: pickupSlots(restaurant), delivery_mode, delivery_slots: ['drive', 'test', 'own'].includes(delivery_mode) ? pickupSlots(forDelivery(restaurant)) : [],
           catering_slots: restaurant.catering_enabled ? pickupSlots(forCatering(restaurant), new Date(), restaurant.catering_days_ahead, 30, 3000) : [],
           open_now: isOpenAt(restaurant.hours, new Date(), restaurant.timezone, restaurant.exceptions) });
       }
@@ -1426,12 +1591,12 @@ Deno.serve(async (req) => {
         if (!when) throw new OrderError('We have no pickup times available right now.');
         if (body.rewards_code || body.gift_code) await limited(req, 'codes', 30);
         const lines = priceCart(menu, body.items, when);
-        let fee = 0;
+        let fee = { cents: 0, by: null as string | null };
         if (body.fulfillment === 'delivery') {
           await limited(req, 'delivery', 30);
           fee = await feeFor(menu.restaurant, cleanAddress(body.address), normPhone(body.phone) || toE164(menu.restaurant.phone), lines);
         }
-        const c = await priceWithCredits(menu.restaurant.id, lines, menu.restaurant, body.tip_cents, normPhone(body.phone), body.rewards_code, body.gift_code, fee, body.promo_code);
+        const c = await priceWithCredits(menu.restaurant.id, lines, menu.restaurant, body.tip_cents, normPhone(body.phone), body.rewards_code, body.gift_code, fee.cents, body.promo_code);
         return json({ ok: true, ...c.t, promo_cents: c.promo_cents, promo_code: c.promo?.code ?? null, gift_applied_cents: c.gift_applied_cents, amount_due_cents: c.amount_due_cents });
       }
       case 'checkout':
@@ -1441,11 +1606,13 @@ Deno.serve(async (req) => {
         if (!token) return json({ ok: false, error: 'Order not found.' }, 404);
         const [w] = await db(`orders?select=*&token=eq.${token}&status=eq.awaiting_payment&payment_provider=neq.stripe`);
         if (w && (await rpc('rate_limit', { p_key: `paycheck:${w.id}`, p_max: 1, p_seconds: 8 }))) await checkPayment('order', w).catch((e) => console.error('pay check', e instanceof Error ? e.message : e));
-        const rows = await db(`orders?select=order_no,status,payment_status,pickup_at,table_label,catering,first_name,subtotal_cents,discount_cents,gift_applied_cents,amount_due_cents,delivery_fee_cents,fulfillment,delivery_address,delivery_tracking_url,delivery_status,tax_cents,guest_fee_cents,tip_cents,total_cents,test_mode,cancel_reason,restaurant:restaurants(name,phone,address,timezone),items:order_items(name,qty,line_total_cents,options,note,menu_item_id,option_ids)&token=eq.${token}`);
+        const rows = await db(`orders?select=order_no,status,payment_status,pickup_at,table_label,catering,first_name,subtotal_cents,discount_cents,gift_applied_cents,amount_due_cents,delivery_fee_cents,fulfillment,delivery_address,delivery_tracking_url,delivery_status,driver_name,tax_cents,guest_fee_cents,tip_cents,total_cents,test_mode,cancel_reason,restaurant:restaurants(name,phone,address,timezone),items:order_items(name,qty,line_total_cents,options,note,menu_item_id,option_ids)&token=eq.${token}`);
         return rows?.[0] ? json({ ok: true, order: rows[0] }) : json({ ok: false, error: 'Order not found.' }, 404);
       }
       case 'kitchen':
         return await kitchen(req, body);
+      case 'driver_view': await limited(req, 'driver', 120); return await driverView(body, false);
+      case 'driver_done': await limited(req, 'driver', 30); return await driverView(body, true);
       case 'form':
         return await submitForm(req, body);
       case 'site_info': return await siteInfo(body);

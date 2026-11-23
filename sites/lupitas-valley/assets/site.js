@@ -1,4 +1,8 @@
 (function () {
+  // Where guests come from (orders, bookings and sign-ups send it). See assets/ordering/track.js.
+  if (!document.querySelector('script[src$="/track.js"]')) {
+    var tr = document.createElement('script'); tr.src = '/assets/ordering/track.js'; document.head.appendChild(tr);
+  }
   var cfg = window.LV || {};
   var PHONE = '(435) 654-3465';
   var HOURS = { 0: null, 1: ['10:30 AM', '9:00 PM'], 2: ['10:30 AM', '9:00 PM'], 3: ['10:30 AM', '9:00 PM'], 4: ['10:30 AM', '9:00 PM'], 5: ['10:30 AM', '10:00 PM'], 6: ['10:30 AM', '10:00 PM'] };

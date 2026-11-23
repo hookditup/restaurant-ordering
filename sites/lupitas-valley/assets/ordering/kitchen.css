@@ -32,3 +32,4 @@ button,input{font:inherit}a{color:inherit}
 .k-tool{display:flex;flex-wrap:wrap;gap:.5rem;align-items:flex-end;margin:.7rem 0}.k-tool label{flex:1 1 200px;display:grid;gap:.25rem;font-weight:600}
 .k-tool input{min-height:46px;padding:.5rem .7rem;border-radius:8px;border:1px solid #6b7280;background:#fff;color:#111}
 .k-tool button{min-height:46px;padding:0 1rem;border:0;border-radius:8px;background:#1f7a45;color:#fff;font-weight:700}
+.k-due{background:#c0392b;color:#fff;padding:.35rem .5rem;border-radius:6px;font-weight:700}.k-send{display:flex;gap:.4rem;margin:.4rem 0}.k-send select{flex:1;font:inherit;padding:.4rem}.k-toast{user-select:text;max-width:92vw;word-break:break-all}
