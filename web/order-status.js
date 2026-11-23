@@ -23,7 +23,8 @@
     const going = o.fulfillment === 'delivery';
     const a = o.delivery_address;
     const table = o.fulfillment === 'dine_in';
-    const words = going ? { ...WORD, ready: 'Your order is ready and waiting for the driver.', completed: 'On its way. Thank you!' }
+    const out = going && o.delivery_status === 'out';
+    const words = going ? { ...WORD, ready: out ? `On its way with ${o.driver_name || 'our driver'}!` : 'Your order is ready and waiting for the driver.', completed: o.delivery_status === 'delivered' ? 'Delivered. Enjoy!' : 'On its way. Thank you!' }
       : table ? { ...WORD, ready: "Your order is ready. We're bringing it to your table.", completed: 'Enjoy your meal!' } : WORD;
     box.innerHTML = `<h1>Order ${esc(o.order_no)}</h1>
       ${o.test_mode ? '<p class="ro-test">Test order. No card was charged.</p>' : ''}

@@ -53,3 +53,6 @@ details.a-box>summary{cursor:pointer;font-weight:700;min-height:32px}
   #a-qr-sheet .a-qr-grid, #a-qr-sheet .a-qr-grid * { visibility: visible; }
   #a-qr-sheet .a-qr-grid { position: absolute; left: 0; top: 0; width: 100%; grid-template-columns: repeat(3, 1fr); }
 }
+.a-h2{margin:1.6rem 0 .6rem;font-size:1.25rem}
+.a-qr-one{max-width:220px;margin:.5rem 0}.a-qr-one svg{width:100%;height:auto;display:block}
+textarea{font:inherit;width:100%;box-sizing:border-box}

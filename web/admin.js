@@ -146,6 +146,16 @@
     a.download = name; a.click(); URL.revokeObjectURL(a.href);
   };
   const shortDate = (d) => (d ? new Date(d).toLocaleDateString('en-US', { timeZone: r.timezone, month: 'short', day: 'numeric', year: 'numeric' }) : '—');
+  const zipsFrom = (t) => t.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
+    const m = l.match(/^(\d{5})\D+\$?(\d+(?:\.\d{1,2})?)$/) || l.match(/^(\d{5})$/);
+    if (!m) throw new Error(`Check the delivery area line "${l}". Use a ZIP code and a fee, like 84032 4.00`);
+    return { zip: m[1], fee_cents: Math.round(Number(m[2] || 0) * 100) };
+  });
+  const driversFrom = (t) => t.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
+    const d = l.replace(/\D/g, '').slice(-10), name = l.replace(/[+\d()\s.-]+$/, '').replace(/[,\s]+$/, '').trim();
+    if (!name || d.length !== 10) throw new Error(`Check the driver line "${l}". Use a name and a 10-digit mobile number.`);
+    return { name, phone: `+1${d}` };
+  });
   const phoneText = (p) => { const d = String(p || '').replace(/\D/g, '').slice(-10); return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : (p || ''); };
   const SEGMENTS = [['all', 'Everyone'], ['recent', 'Ordered in the last 30 days'], ['lapsed', "Haven't ordered in 45+ days"], ['regulars', 'Regulars (3+ orders)'], ['never_ordered', 'Never ordered online'], ['rewards', 'Rewards members'], ['accounts', 'Guests with an account'], ['birthday_month', 'Birthday this month']];
   const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -524,6 +534,52 @@
     };
   }
 
+  // ---------- where guests come from ----------
+  const CHANNEL_NAMES = {
+    google_business: 'Google Maps & Business Profile', google_search: 'Google search', google_ads: 'Google Ads', search: 'Other search engines', search_ads: 'Other search ads',
+    ai: 'AI assistants (ChatGPT etc.)', social: 'Social media', social_ads: 'Social media ads', email: 'Our emails', sms: 'Our texts', qr: 'QR codes & print',
+    table_qr: 'Table QR codes', phone: 'Phone (AI)', referral: 'Other websites', campaign: 'Other tagged links', direct: 'Direct / typed in', unknown: 'Not tracked (before tracking started)',
+  };
+  const chName = (k) => CHANNEL_NAMES[k] || k;
+  const slugify = (v) => String(v || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+  const loadQr = () => (window.qrcode ? Promise.resolve() : new Promise((ok, no) => { const sc = document.createElement('script'); sc.src = '/assets/ordering/qrcode.js'; sc.onload = ok; sc.onerror = no; document.head.append(sc); }));
+  const qrSvg = (text) => { const q = window.qrcode(0, 'M'); q.addData(text); q.make(); return q.createSvgTag({ cellSize: 6, margin: 2, scalable: true }); };
+  const copyBtn = (v) => `<button type="button" class="a-alt" data-copy="${esc(v)}">Copy</button>`;
+  const wireCopy = (box) => box.querySelectorAll('[data-copy]').forEach((b) => { b.onclick = () => { navigator.clipboard?.writeText(b.dataset.copy).then(() => say('Copied.'), () => say(b.dataset.copy)); }; });
+  async function channelsPanel(box) {
+    const c = await rpc('admin_channels', { p_restaurant: r.id, p_days: days });
+    const counts = (o) => Object.entries(o).sort((a, b) => b[1] - a[1]).map(([k, n]) => ({ cells: [chName(k), n], n }));
+    const origin = location.origin, gbp = (path) => `${origin}${path}?utm_source=google&utm_medium=gbp`;
+    box.innerHTML = `<h2 class="a-h2">Where guests come from</h2>
+      ${bars('Orders by channel', ['Channel', 'Orders', 'Sales', 'First-time guests'], c.orders.map((x) => ({ cells: [chName(x.channel), x.orders, money(x.sales_cents), x.first_orders], n: x.sales_cents })), (x) => x.n)}
+      ${c.campaigns.length ? bars('Top sources and campaigns', ['Campaign', 'Channel', 'Orders', 'Sales'], c.campaigns.map((x) => ({ cells: [[x.source, x.campaign].filter(Boolean).join(' · ') || '—', chName(x.channel), x.orders, money(x.sales_cents)], n: x.sales_cents })), (x) => x.n) : ''}
+      <div class="a-grid">${bars('Reservations by channel', ['Channel', 'Bookings'], counts(c.reservations), (x) => x.n)}${bars('Sign-ups by channel (rewards and forms)', ['Channel', 'Sign-ups'], counts(c.signups), (x) => x.n)}</div>
+      <details class="a-box"><summary>Google ordering link (Order online button)</summary>
+        <p class="a-help">Point Google's "Order online" button at your own menu so orders skip the delivery apps and show here as Google Maps &amp; Business Profile.</p>
+        <p><code>${esc(gbp('/menu/'))}</code> ${copyBtn(gbp('/menu/'))}</p>
+        <ol class="a-help"><li>Open your Google Business Profile and choose <strong>Food ordering</strong>.</li><li>Choose <strong>Add a link</strong> and paste the link above.</li><li>Select the new link, choose <strong>Set as preferred</strong>, and turn on pickup (and delivery if you offer it).</li><li>Save.</li></ol>
+        <p class="a-help">Also use these in the profile: website <code>${esc(gbp('/'))}</code> ${copyBtn(gbp('/'))} and reservations <code>${esc(gbp('/reservations/'))}</code> ${copyBtn(gbp('/reservations/'))}</p></details>
+      <details class="a-box"><summary>Make a tracked link or QR code</summary>
+        <p class="a-help">Use one for each flyer, billboard, post or ad, and its orders show by name above.</p>
+        <form class="a-form" id="a-link"><label>Name it <input name="name" required maxlength="40" placeholder="Billboard I-15"></label>
+          <label>Where it goes out <select name="kind"><option value="print/qr">QR code / print / billboard</option><option value="facebook/social">Facebook post</option><option value="instagram/social">Instagram post</option><option value="facebook/paid_social">Facebook or Instagram ad</option><option value="email/email">Email</option><option value="sms/sms">Text message</option><option value="link/link">Other</option></select></label>
+          <label>Opens <select name="page"><option value="/menu/">Order online (menu)</option><option value="/">Home page</option><option value="/reservations/">Reservations</option><option value="/rewards/">Rewards</option><option value="/catering/">Catering</option><option value="/gift-cards/">Gift cards</option></select></label>
+          <button>Make link</button></form><div id="a-link-out"></div></details>`;
+    wireCopy(box);
+    box.querySelector('#a-link').onsubmit = async (e) => {
+      e.preventDefault();
+      const f = e.target.elements, name = slugify(f.name.value);
+      if (!name) return say('Give the link a name.', true);
+      const [src, med] = f.kind.value.split('/');
+      const url = `${origin}${f.page.value}?utm_source=${src}&utm_medium=${med}&utm_campaign=${name}`;
+      await loadQr();
+      const out = box.querySelector('#a-link-out');
+      out.innerHTML = `<p><code>${esc(url)}</code> ${copyBtn(url)}</p><figure class="a-qr-one">${qrSvg(url)}<figcaption>${esc(f.name.value)}</figcaption></figure><p><button type="button" class="a-alt" id="a-link-svg">Download QR code (SVG)</button></p>`;
+      wireCopy(out);
+      out.querySelector('#a-link-svg').onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([out.querySelector('svg').outerHTML], { type: 'image/svg+xml' })); a.download = `qr-${name}.svg`; a.click(); URL.revokeObjectURL(a.href); };
+    };
+  }
+
   const views = {
     pos: posView,
     payments: paymentsView,
@@ -540,8 +596,10 @@
         ${bars('Top dishes', ['Dish', 'Sold', 'Sales'], s.top_items.map((x) => ({ cells: [x.name, x.qty, money(x.sales_cents)], n: x.qty })), (x) => x.n)}
         <div>${bars('Busiest hours', ['Hour', 'Orders'], s.by_hour.map((x) => ({ cells: [hourText(x.hour), x.orders], n: x.orders })), (x) => x.n)}
         ${bars('Busiest days', ['Day', 'Orders', 'Sales'], s.by_weekday.map((x) => ({ cells: [WEEK[x.day], x.orders, money(x.sales_cents)], n: x.orders })), (x) => x.n)}</div></div>
-        ${bars('Sales by day', ['Date', 'Orders', 'Sales'], s.by_day.slice(-31).map((x) => ({ cells: [x.day, x.orders, money(x.sales_cents)], n: x.sales_cents })), (x) => x.n)}`;
+        ${bars('Sales by day', ['Date', 'Orders', 'Sales'], s.by_day.slice(-31).map((x) => ({ cells: [x.day, x.orders, money(x.sales_cents)], n: x.sales_cents })), (x) => x.n)}
+        <section id="a-chan"></section>`;
       view().querySelector('#a-days').onchange = (e) => { days = +e.target.value; views.dashboard(); };
+      channelsPanel(view().querySelector('#a-chan')).catch((e) => say(e.message, true));
     },
     async orders() {
       const rows = await call(`orders?select=order_no,created_at,status,payment_status,fulfillment,first_name,last_name,subtotal_cents,tax_cents,tip_cents,delivery_fee_cents,total_cents,test_mode&restaurant_id=eq.${r.id}&order=created_at.desc&limit=200`);
@@ -826,6 +884,13 @@
         <section class="a-box"><h2>Catering</h2><p class="a-help">Adds a Catering choice to the menu: guests order days ahead for pickup and pay online.</p><div class="a-form"><label class="a-check"><input type="checkbox" name="catering_enabled"${s.catering_enabled ? ' checked' : ''}> Take catering orders online</label>${num('catering_min', 'Catering minimum ($)', s.catering_min_cents / 100, 'min="0" step="1"')}${num('catering_lead_hours', 'Notice needed (hours)', s.catering_lead_hours, 'min="1" max="720"')}${num('catering_days_ahead', 'How far ahead (days)', s.catering_days_ahead, 'min="1" max="120"')}</div></section>
         <section class="a-box"><h2>Weekly report</h2><p class="a-help">Every Monday morning: last week's online sales, orders, new and returning guests, top dishes, and what texts and emails brought back.</p><div class="a-form"><label class="a-check"><input type="checkbox" name="report_enabled"${s.report_enabled ? ' checked' : ''}> Email the weekly report</label>${txt('report_email', 'Send it to (blank = new order email)', s.report_email, 'email')}</div>
           <button type="button" class="a-alt" id="a-report">Email me last week's report now</button></section>
+        <section class="a-box"><h2>Your own drivers</h2><p class="a-help">Deliver with your own staff in the ZIP codes you choose. The kitchen picks a driver, who gets a text with the address, directions and a Delivered button. ZIP codes not listed use DoorDash if it's connected. Also turn on "Offer delivery at checkout" above.</p>
+          <div class="a-form"><label class="a-check"><input type="checkbox" name="own_delivery"${s.own_delivery ? ' checked' : ''}> Deliver with our own drivers</label>
+          <label>Delivery areas: one ZIP code and fee per line<textarea name="own_zips" rows="4" placeholder="84032 4.00">${esc((s.own_delivery_zips || []).map((z) => `${z.zip} ${(z.fee_cents / 100).toFixed(2)}`).join('\n'))}</textarea></label>
+          <label>Drivers: name and mobile number per line<textarea name="drivers" rows="4" placeholder="Ana, 435-555-0100">${esc((s.drivers || []).map((d) => `${d.name}, ${phoneText(d.phone)}`).join('\n'))}</textarea></label></div></section>
+        <section class="a-box"><h2>AI phone ordering</h2><p class="a-help">Lets your HighLevel voice agent read the menu, price an order and send it to the kitchen. Phone orders are paid at pickup and marked NOT PAID on the kitchen screen and ticket.</p>
+          <div class="a-form"><label class="a-check"><input type="checkbox" name="phone_enabled"${s.phone_enabled ? ' checked' : ''}> Take orders from the AI phone agent</label></div>
+          <button type="button" class="a-alt" id="a-phonekey">${s.phone_key_hash ? 'Replace the phone key' : 'Create the phone key'}</button><div id="a-phone-out"></div></section>
         <section class="a-box"><h2>Rewards</h2><div class="a-form">${num('rewards_points_per_dollar', 'Points per $1', s.rewards_points_per_dollar, 'min="0" max="100"')}${num('rewards_redeem_points', 'Points for a reward', s.rewards_redeem_points, 'min="1"')}${num('rewards_redeem', 'Reward value ($)', s.rewards_redeem_cents / 100, 'min="0.01" step="0.01"')}</div></section>
         <section class="a-box"><h2>Gift cards</h2><div class="a-form">${num('gift_min', 'Smallest online card ($)', s.gift_min_cents / 100, 'min="1"')}${num('gift_max', 'Largest online card ($)', s.gift_max_cents / 100, 'min="1"')}</div></section>
         <button>Save settings</button></form>`;
@@ -834,8 +899,24 @@
         for (const [k] of DAYS) { const o = f[`o_${k}`].value, c = f[`c_${k}`].value; if (!!o !== !!c) throw new Error('Enter both open and close times, or neither.'); hours[k] = o ? [[o, c]] : []; }
         await rpc('admin_save_settings', { p_restaurant: r.id, p: { hours, pickup_lead_minutes: f.pickup_lead_minutes.value, alert_email: f.alert_email.value, forms_email: f.forms_email.value, delivery_enabled: f.delivery_enabled.checked, delivery_lead_minutes: f.delivery_lead_minutes.value, delivery_min_cents: toCents(f.delivery_min.value), doordash_store_url: f.doordash_store_url.value, rewards_points_per_dollar: f.rewards_points_per_dollar.value, rewards_redeem_points: f.rewards_redeem_points.value, rewards_redeem_cents: toCents(f.rewards_redeem.value), gift_min_cents: toCents(f.gift_min.value), gift_max_cents: toCents(f.gift_max.value),
           dine_in_enabled: f.dine_in_enabled.checked, table_count: f.table_count.value || 0, catering_enabled: f.catering_enabled.checked, catering_min_cents: toCents(f.catering_min.value),
-          catering_lead_hours: f.catering_lead_hours.value, catering_days_ahead: f.catering_days_ahead.value, report_enabled: f.report_enabled.checked, report_email: f.report_email.value } });
+          catering_lead_hours: f.catering_lead_hours.value, catering_days_ahead: f.catering_days_ahead.value, report_enabled: f.report_enabled.checked, report_email: f.report_email.value,
+          own_delivery: f.own_delivery.checked, own_delivery_zips: zipsFrom(f.own_zips.value), drivers: driversFrom(f.drivers.value), phone_enabled: f.phone_enabled.checked } });
       }); };
+      view().querySelector('#a-phonekey').onclick = (e) => {
+        if (s.phone_key_hash && !confirmStep(e.target, 'The old key stops working.')) return;
+        attempt(async () => {
+          const x = await staff('phone_key');
+          s.phone_key_hash = 'set';
+          const out = view().querySelector('#a-phone-out');
+          out.innerHTML = `<p class="a-help"><strong>Copy this key now. It is shown only once.</strong></p><p><code>${esc(x.key)}</code> ${copyBtn(x.key)}</p>
+            <p class="a-help">In HighLevel, save it as the custom value <code>restaurant_phone_key</code>. Then add three custom actions to the voice agent, each a POST with the header <code>Authorization: Bearer {{custom_values.restaurant_phone_key}}</code>:</p>
+            <ul class="a-help"><li><strong>Get menu</strong> (at the start of an order call): <code>${esc(x.base)}/menu</code> ${copyBtn(`${x.base}/menu`)}</li>
+            <li><strong>Price the order</strong>, parameters <code>items</code> (text, e.g. "2 steak tacos no onion; 1 large horchata") and <code>pickup_time</code> (text, "asap" or "6:30 pm"): <code>${esc(x.base)}/quote</code> ${copyBtn(`${x.base}/quote`)}</li>
+            <li><strong>Place the order</strong> after the caller agrees, parameters <code>quote_id</code>, <code>first_name</code>, <code>last_name</code>, <code>phone</code>, <code>notes</code>: <code>${esc(x.base)}/place</code> ${copyBtn(`${x.base}/place`)}</li></ul>
+            <p class="a-help">The agent reads back <code>say</code>, or asks the caller <code>ask</code> when something is missing.</p>`;
+          wireCopy(out);
+        }, 'Key created. Remember to turn on AI phone ordering and save.');
+      };
       view().querySelector('#a-report').onclick = () => attempt(async () => { const x = await staff('report_send'); say(x.message); }, 'Sent.');
       view().querySelector('#a-qr').onclick = async () => {
         const n = +view().querySelector('[name=table_count]').value;
