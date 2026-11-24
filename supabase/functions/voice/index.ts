@@ -2,6 +2,7 @@
 //   POST /functions/v1/voice   header Authorization: Bearer <the restaurant's phone key (Settings > AI phone ordering)>
 //   body: { mode, ...fields }  (HighLevel may nest fields under "parameters"; both work)
 // modes: check | book | request | find | reschedule | party | cancel | late | callback | order_link | join_link
+//        order_menu | order_quote | order_place (passed to /ordering/phone/*) | ping (no key; HighLevel's save test)
 // The agent reads `say` to the caller, or asks the caller `ask` when something is missing.
 // Food orders go through the ordering function (/ordering/phone/menu|quote|place), same key.
 import { dayText, listTimes, localDay, nearestOpen, parseClock, parseDay } from './voice.js';
@@ -167,14 +168,24 @@ async function handle(r: any, a: any) {
 Deno.serve(async (req) => {
   if (req.method !== 'POST') return json({ ok: false, error: 'POST only' }, 405);
   try {
+    const b = await req.json().catch(() => ({}));
+    const a = { ...(b?.parameters ?? b?.args ?? b?.data ?? {}), ...b };
+    // HighLevel only saves a custom action after a 2xx test call; a ping answers without a key and returns nothing else.
+    if (a.ping === true || a.ping === 'true' || String(a.mode ?? '').toLowerCase() === 'ping') return json({ ok: true, ping: true });
     const key = (req.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '').trim();
     if (!/^rok_[a-f0-9]{48}$/.test(key)) return json({ ok: false, error: 'Missing or wrong key.' }, 401);
+    // Food orders: one endpoint for the agent; the ordering function checks the key and does the work.
+    const order = String(a.mode ?? '').toLowerCase().match(/^order_(menu|quote|place)$/);
+    if (order) {
+      const res = await fetch(`${SB_URL}/functions/v1/ordering/phone/${order[1]}`, {
+        method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', 'x-forwarded-for': req.headers.get('x-forwarded-for') ?? '' }, body: JSON.stringify(a),
+      });
+      return new Response(await res.text(), { status: res.status, headers: { 'Content-Type': 'application/json' } });
+    }
     const [r] = await db(`restaurants?select=id,slug,name,timezone,site_url,phone,res_max_online,forms_email,alert_email&phone_key_hash=eq.${await sha256(key)}&phone_enabled=eq.true&active=eq.true`);
     if (!r) return json({ ok: false, error: 'Phone host is not connected. Check the key, and that AI phone ordering is on.' }, 401);
     const ip = (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim() || 'unknown';
     if (!(await rpc('rate_limit', { p_key: `voice:${ip}`, p_max: 200, p_seconds: 600 }))) return json({ ok: false, say: 'Our system is busy. Please hold for a team member.' }, 429);
-    const b = await req.json().catch(() => ({}));
-    const a = { ...(b?.parameters ?? b?.args ?? b?.data ?? {}), ...b };
     return await handle(r, a);
   } catch (e) {
     console.error(e instanceof Error ? e.message : e);
